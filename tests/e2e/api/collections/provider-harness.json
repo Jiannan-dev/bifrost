@@ -298482,6 +298482,67 @@
           "response": []
         }
       ]
+    },
+    {
+      "name": "264. DeepSeek native WebSearch after MCP fallback removal (deepseek native websearch)",
+      "description": "Claude Code-shaped forced Anthropic WebSearch must reach the built-in DeepSeek provider in Anthropic endpoint mode instead of being consumed by the removed Exa/MCP interception. The shared harness profile already defines the deepseek-v4-pro-anthropic alias. The stock profile has no Exa fallback configured, so this is a post-removal wire guard; the Go legacy-config test supplies the red-before-green check.",
+      "item": [
+        {
+          "name": "deepseek/deepseek-v4-pro-anthropic /anthropic/v1/messages keeps native web_search (deepseek native websearch)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('DeepSeek native search: exact success status', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "var body = pm.response.json() || {};",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('DeepSeek native search: outbound request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing: ' + pm.response.text().slice(0, 600)).to.be.an('object');",
+                  "});",
+                  "var tools = (rr && rr.tools) || [];",
+                  "pm.test('DeepSeek native search: web_search reaches the Anthropic-compatible endpoint, not Exa', function () {",
+                  "  pm.expect(tools.some(function (t) { return /^web_search_/.test(t.type || '') && t.name === 'web_search'; }), 'tools: ' + JSON.stringify(tools)).to.eql(true);",
+                  "  pm.expect(JSON.stringify(rr || {}), 'Exa tool leaked into the outbound request').to.not.include('Exa-web_search_exa');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"deepseek/deepseek-v4-pro-anthropic\",\"max_tokens\":128,\"thinking\":{\"type\":\"disabled\"},\"messages\":[{\"role\":\"user\",\"content\":\"Perform a web search for the query: DeepSeek API documentation\"}],\"tools\":[{\"type\":\"web_search_20250305\",\"name\":\"web_search\",\"max_uses\":1}],\"tool_choice\":{\"type\":\"tool\",\"name\":\"web_search\"}}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }

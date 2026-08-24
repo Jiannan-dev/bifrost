@@ -528,3 +528,19 @@ func (m *MCPManager) Cleanup() error {
 	m.logger.Info(MCPLogPrefix + " MCP cleanup completed")
 	return nil
 }
+
+// RequestUsesWebSearch reports whether a Responses request advertises native web search.
+func RequestUsesWebSearch(req *schemas.BifrostResponsesRequest) bool {
+	if req == nil || req.Params == nil {
+		return false
+	}
+	for _, tool := range req.Params.Tools {
+		if tool.Type == schemas.ResponsesToolTypeWebSearch || tool.Type == schemas.ResponsesToolTypeWebSearchPreview {
+			return true
+		}
+		if tool.Name != nil && (*tool.Name == "WebSearch" || *tool.Name == "web_search") {
+			return true
+		}
+	}
+	return false
+}

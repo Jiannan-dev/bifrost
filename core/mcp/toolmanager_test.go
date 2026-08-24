@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 	"net/http/httptest"
 	"strings"
 	"sync/atomic"
@@ -1239,6 +1240,45 @@ func TestParseAndAddTools_ResponsesUntouchedWhenAutoInjectDisabled(t *testing.T)
 
 	require.NotNil(t, got.ResponsesRequest.Params.Instructions)
 	assert.Equal(t, caller, *got.ResponsesRequest.Params.Instructions)
+}
+
+func TestParseAndAddTools_NativeWebSearchSurvivesLegacyFallbackConfig(t *testing.T) {
+	var cfg schemas.MCPToolManagerConfig
+	err := json.Unmarshal([]byte(`{"disable_auto_tool_inject":true,"web_search_fallback_tool":"Exa-web_search_exa"}`), &cfg)
+	require.NoError(t, err)
+	m := NewToolsManager(&cfg, &mockToolClientManager{tools: []schemas.ChatTool{makeTool("Exa-web_search_exa")}}, nil, nil, &MockLogger{})
+	req := buildResponsesRequest()
+	req.ResponsesRequest.Provider = schemas.DeepSeek
+	req.ResponsesRequest.Model = "deepseek-v4-pro"
+	req.ResponsesRequest.Params.Tools = []schemas.ResponsesTool{{Type: schemas.ResponsesToolTypeWebSearch}}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	got := m.ParseAndAddToolsToRequest(ctx, req)
+	require.Len(t, got.ResponsesRequest.Params.Tools, 1)
+	assert.Equal(t, schemas.ResponsesToolTypeWebSearch, got.ResponsesRequest.Params.Tools[0].Type)
+}
+
+func TestRequestUsesWebSearchPreservesNativeCacheBypass(t *testing.T) {
+	if RequestUsesWebSearch(nil) || RequestUsesWebSearch(&schemas.BifrostResponsesRequest{}) {
+		t.Fatal("requests without search tools must not bypass the semantic cache")
+	}
+	req := &schemas.BifrostResponsesRequest{Params: &schemas.ResponsesParameters{Tools: []schemas.ResponsesTool{{Type: schemas.ResponsesToolTypeWebSearch}}}}
+	if !RequestUsesWebSearch(req) {
+		t.Fatal("native web search must still bypass the semantic cache")
+	}
+}
+
+func BenchmarkParseAndAddTools_NativeWebSearch(b *testing.B) {
+	m := NewToolsManager(&schemas.MCPToolManagerConfig{DisableAutoToolInject: true}, &mockToolClientManager{}, nil, nil, &MockLogger{})
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	b.ReportAllocs()
+	for b.Loop() {
+		req := &schemas.BifrostRequest{
+			RequestType: schemas.ResponsesRequest,
+			ResponsesRequest: &schemas.BifrostResponsesRequest{Provider: schemas.DeepSeek, Model: "deepseek-v4-pro",
+				Params: &schemas.ResponsesParameters{Tools: []schemas.ResponsesTool{{Type: schemas.ResponsesToolTypeWebSearch}}}},
+		}
+		m.ParseAndAddToolsToRequest(ctx, req)
+	}
 }
 
 // Instructions follow tools. With auto-injection disabled and no per-request filter, Bifrost
