@@ -585,6 +585,7 @@ func (c *ClientConfig) GenerateClientConfigHashWithToolManager(tm *schemas.MCPTo
 		h.Write([]byte("toolMgrOAuthPrivateAllowlist:"))
 		h.Write(data)
 	}
+	h.Write([]byte("toolMgrWebSearchFallback:" + tm.WebSearchFallbackTool))
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
