@@ -364,6 +364,10 @@ type MCPToolManagerConfig struct {
 	MaxAgentDepth         int                  `json:"max_agent_depth"`
 	CodeModeBindingLevel  CodeModeBindingLevel `json:"code_mode_binding_level,omitempty"`  // How tools are exposed in VFS: "server" or "tool"
 	DisableAutoToolInject bool                 `json:"disable_auto_tool_inject,omitempty"` // When true, MCP tools are not injected into requests by default
+	// WebSearchFallbackTool is the fully-qualified discovered MCP tool name to use
+	// when the selected model does not support a native server-side web_search tool.
+	// Example: "exa-web_search_exa". Empty disables the compatibility rewrite.
+	WebSearchFallbackTool string `json:"web_search_fallback_tool,omitempty"`
 	// MaxInstructionsPerClient bounds one server's forwarded instructions, in bytes. 0 is the default.
 	MaxInstructionsPerClient int `json:"max_instructions_per_client,omitempty"`
 	// MaxInstructionsTotal bounds the whole aggregate, in bytes. 0 is the default.
