@@ -353,6 +353,9 @@ func (plugin *Plugin) PreRequestHook(_ *schemas.BifrostContext, _ *schemas.Bifro
 // state on the plugin keyed by request ID for PostLLMHook to consume when
 // the upstream response arrives.
 func (plugin *Plugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
+	if bypass, _ := ctx.Value(schemas.BifrostContextKeyBypassSemanticCache).(bool); bypass {
+		return req, nil, nil
+	}
 	cacheKey, ok := plugin.resolveCacheKey(ctx)
 	if !ok {
 		return req, nil, nil

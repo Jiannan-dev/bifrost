@@ -10,6 +10,114 @@ GitHub: `maximhq/bifrost`
 
 ---
 
+## Fork Maintenance Policy (Jiannan-dev/bifrost)
+
+This fork intentionally stays close to upstream. Keep its maintenance simple:
+
+1. **Sync from the production release baseline.** At least weekly, fetch `maximhq/bifrost:main`, fast-forward the fork's mirror `main` branch to match, then **rebase** `enhanced` onto that tip. Never merge upstream into `enhanced`. Never add a sync/merge commit. After the rebase, history must stay linear and look like upstream: `upstream/main` plus **only** this fork's feature commits. `maximhq/bifrost:dev` is an integration branch, not this fork's production baseline; import a dev-only fix only after reviewing that individual commit and its dependencies. Always run the focused Go tests, build the gateway image, and run the Claude Code WebSearch E2E after a sync. If `enhanced` was already pushed, update it with `git push --force-with-lease`.
+2. **Maintain the fork feature matrix below.** Before extending a fork-only feature, check whether upstream now provides equivalent behavior. If upstream covers the same use case and passes our E2E, remove the fork implementation and use upstream instead of maintaining duplicate code.
+
+Do not add fork-specific behavior directly to the upstream-mirror `main` branch. Develop it on a feature branch and squash it onto `enhanced` as one commit after tests pass — do not merge, so `enhanced` never grows a merge bubble.
+
+### Commit Policy
+
+Keep the maintained branch auditable by organizing commits by feature, not by work session:
+
+- One complete fork feature should normally be one commit, including its implementation, tests, schema changes, and feature-specific documentation.
+- Deployment files and README changes that exist only to deliver a feature belong in that feature's commit; use a separate commit only when deployment is an independently reviewable feature.
+- Do not leave chains of fixup, typo, follow-up, or repeated README commits on the maintained branch. Squash them before pushing or before landing on `enhanced`.
+- Upstream sync is a rebase of the existing fork feature commits onto `upstream/main`. Do not create an extra commit for the sync. `git log upstream/main..enhanced` must list only fork feature commits.
+- Before rewriting shared remote history, confirm no other contributor depends on it and use `git push --force-with-lease`, never an unconditional force push.
+
+### Fork Feature Matrix
+
+| Fork feature | Why it exists | Upstream replacement condition | Verification required before removal |
+|---|---|---|---|
+| Claude Code forced Anthropic WebSearch auxiliary request → configured MCP search tool | Lets non-native/local models use Claude Code's built-in `WebSearch` transparently | Upstream can execute forced `web_search_*` requests through MCP/HTTP for unsupported models, including streaming | Claude Code → Bifrost → unsupported model → real search E2E passes; auxiliary search is not dispatched to the model |
+| WebSearch-aware semantic-cache bypass | Prevents stale answer-cache hits from suppressing fresh searches | Upstream explicitly bypasses or safely short-caches tool-dependent search turns | Repeated time-sensitive query performs a fresh search; provider prompt caching remains functional |
+| Anthropic `/v1/models` keeps full `provider/model` ids | Stops the Anthropic list-models converter from stripping the routing prefix, which mis-routes cropped ids such as `deepseek/...` to the built-in `deepseek` provider | Upstream returns the same prefixed ids on the Anthropic list-models path as on OpenAI `/v1/models` | OpenAI and Anthropic `/v1/models` return the same id; using that id on `/anthropic/v1/messages` routes to the custom provider |
+| Claude Code Responses→Chat fallback cache hygiene | Claude Code hits custom OpenAI-compat providers (CommandCode / DeepSeek / GLM) via Responses→`ToChatRequest`. Those custom providers skip `filterOpenAISpecificParameters`, so `prompt_cache_key*`, the per-request billing-header system block, and mid-conversation `role:system` budget turns bust implicit prefix cache. Upstream already inlines mid-conv system on Anthropic/Bedrock/Gemini egress (#6334 / #4534), not on `ToChatRequest`. | maximhq `ToChatRequest` drops `prompt_cache_key*` for non-OpenAI chat fallback, strips Claude Code billing system blocks, and inlines mid-conversation system as `<system-reminder>` user turns | `go test ./schemas -run 'TestToChatRequest_'` plus harness folder 69 (`x-bf-send-back-raw-request` on `deepseek` `/v1/responses`). Live cache-hit is the Claude Code 3-turn probe against CommandCode after deploy. Native OpenAI chat must keep `prompt_cache_key` (existing harness OpenAI cache cases). |
+| Provider-independent official pricing and model-info fallback | Custom/case-variant providers otherwise record zero cost and return incomplete model metadata even when the synced datasheet has a first-party row. Keeps the upstream provider/model lookup first, then uses one shared conservative publisher fallback for pricing and model-info reads; normalizes datasheet modality fields into the existing model architecture response. | Upstream resolves case-variant built-in providers and custom-provider GPT/Claude/DeepSeek/GLM/Grok/Gemini/Mistral/Codestral/Cohere models against the synced first-party datasheet for both billing and complete model-info lookups while preserving actual-provider override scope and wire-model keys | `go test ./modelcatalog/datasheet -run 'Test(OfficialPricingFallback|GetPricingEntryForModel|EntryUnmarshalMaps)'`, `go test ./plugins/logging -run TestCalculateCostForLogUsesOfficialPricingFallbackWithCacheTokens`, `go test ./bifrost-http/handlers -run TestEnrichListModelsResponseFallsBackToOfficialPublisherMetadata`, plus provider harness folder 70 (`OpenAI/gpt-4o-mini` returns positive `usage.cost`). |
+
+When adding a fork-only feature, add one row. When removing one because upstream supersedes it, record the upstream PR/version in the removing commit and delete the row.
+
+### Provider-independent official pricing and model-info fallback (fork feature)
+
+The synced Bifrost datasheet remains the only source of rates and model metadata. One shared candidate resolver keeps the upstream provider/model lookup first; only a miss triggers case-insensitive canonicalization for built-in providers and then conservative first-party lookup for GPT/o-series (`openai`), Claude (`anthropic`), DeepSeek (`deepseek`), GLM (`zai`), Grok (`xai`), Gemini (`gemini`), Mistral/Codestral (`mistral`), and Cohere (`cohere`). The publisher fallback may strip one model namespace and use the datasheet `base_model`, but never chooses an arbitrary same-name row from another host. Both cost calculation and catalog model-info reads use this resolver, so `/v1/models` can enrich custom relay IDs such as `CommandCode/deepseek/deepseek-v4-flash` without maintaining a second fallback path. Datasheet `supported_modalities`, `supported_output_modalities`, and chat/responses `supports_vision` fields are normalized into the existing `schemas.Architecture` response while loading the row.
+
+Pricing overrides retain their existing contract: they patch any fallback base price, match scopes against the actual request provider/key/user/VK, and match the original wire-model override key. Override-only and explicit-zero pricing continue to work. Unknown/open-hosted families such as Llama deliberately keep the upstream lookup result and receive no inferred publisher row when it misses.
+
+### Claude Code WebSearch → MCP Fallback (fork feature)
+
+Lets Claude Code's built-in `WebSearch` work when the selected model cannot execute Anthropic native server-side `web_search` (local / non-Claude models). Upstream-replacement condition: upstream can execute forced `web_search_*` requests through MCP/HTTP for unsupported models (see feature matrix row above).
+
+**How it works — two independent paths:**
+
+1. **Forced-interception (main path, `core/mcp/forced_websearch.go`):** Claude Code resolves its outer `WebSearch` function by sending a dedicated auxiliary request — exactly one `web_search`/`web_search_preview` tool, forced tool_choice, last user message matching `Perform a web search for the query: <query>`. Bifrost intercepts this in `Bifrost.ResponsesRequest`/`ResponsesStreamRequest` BEFORE provider dispatch, executes the configured MCP tool directly, and returns the result as `web_search_call` items (streaming included). The request never reaches the model. This path checks only **Enabled** (`tools_to_execute`), NOT auto-execute.
+2. **Rewrite (`rewriteUnsupportedWebSearch` in `core/mcp/toolmanager.go`):** when a non-streaming Responses request declares a native `web_search` tool AND the model catalog marks the model as not supporting native search (`SupportsWebSearch` false), the tool is replaced with the configured MCP tool and exposed to the model. The model may then call it — this path goes through the MCP agent loop and DOES require auto-execute. Trigger conditions are narrow; it is not the Claude Code flow.
+
+Search-capable requests set `BifrostContextKeyBypassSemanticCache` so a stale answer-cache hit cannot suppress a fresh search.
+
+**Configuration (fork-only, no UI/API surface — config.json only):**
+
+```json
+{
+  "mcp": {
+    "tool_manager_config": {
+      "web_search_fallback_tool": "Exa-web_search_exa"
+    }
+  }
+}
+```
+
+- Tool full name = **MCP client `Name`** (NOT `client_id`) + `-` + the server's raw tool name. **Case-sensitive** — `Exa-web_search_exa` ≠ `exa-web_search_exa`. The client `Name` is validated by `ValidateMCPClientName` (ASCII, no hyphens/spaces, no leading digit) but is NOT lowercased.
+- Exa official MCP (`https://mcp.exa.ai/mcp`) search tool is `web_search_exa`; its auth header is **`x-api-key`** (NOT `Authorization`). Header values support `env.VAR` / `vault.` prefixes.
+- The client must be **Enabled** (`tools_to_execute`); auto-execute is documented as required but is not enforced on the forced-interception path.
+
+**Dokploy deployment (this fork):**
+
+- Config lives in the repo root `config.dokploy.json`; Dokploy builds from git and mounts it read-only into the container at `/app/data/config.json`.
+- Editing the file on the server is futile — the next deployment overwrites it from git. Correct flow: edit repo file → commit → push → Dokploy redeploys automatically.
+- The file's `tool_manager_config` and UI/DB-managed MCP clients (SQLite `config.db`) coexist without overwriting each other: `loadMCPConfig`/`mergeMCPConfig` keep DB clients even when the file declares none.
+
+**Current production state (check before assuming):**
+
+- Prod server alias: `tssh orangeVPS-4C16G` (read-only discipline — never modify; avoid reading `headers_json` / keys).
+- Bifrost data DB: `/var/lib/docker/volumes/infra-bifrost-4mfkue_bifrost-data/_data/config.db` (host has no `sqlite3`; use `python3` with `sqlite3.connect("file:...config.db?mode=ro&immutable=0", uri=True)`).
+- MCP clients table: `config_mcp_clients` (query `name`, `client_id`, `tools_to_execute_json`, `tools_to_auto_execute_json`; skip `headers_json`).
+- Exa client `Name` is `Exa` (uppercase), so the fallback is `Exa-web_search_exa`. Verify with bifrost logs: `forced web_search auxiliary request intercepted; executing MCP tool "Exa-web_search_exa"`.
+
+### Claude Code Responses→Chat fallback cache hygiene (fork feature)
+
+Lets Claude Code's implicit prefix cache hit on OpenAI-compat chat backends (CommandCode, native DeepSeek/Groq Responses→Chat, custom providers with `responses` disabled). Added because `ToChatRequest` previously forwarded Claude Code's `prompt_cache_key`, billing-header system block, and mid-conversation `role:system` budget turns — all of which bust DeepSeek/GLM prefix cache. Upstream replacement: see feature matrix row above.
+
+**Where it runs:** `BifrostResponsesRequest.ToChatRequest` in `core/schemas/mux.go` (`prepareChatFallbackMessages`). Not in `ToChatMessages` (that converter is shared with Replicate/Perplexity and round-trips). Native OpenAI chat completions are untouched and still send `prompt_cache_key`.
+
+**What it does:**
+
+1. Drop `prompt_cache_key` / `prompt_cache_retention` / `prompt_cache_options` (OpenAI isolation fields; DeepSeek docs: not supported / silently ignored; strict compat: 400).
+2. Strip system/developer content whose text starts with `x-anthropic-billing-header:` (Claude Code `cch=` nonce). Drop the message if nothing remains.
+3. Keep the leading system prompt; rewrite later `role:system` turns to `user` wrapped in `<system-reminder>` (same envelope as `inlineMidConversationSystem` / #6334 / #4534).
+
+Do not treat Claude Code's `CLAUDE_CODE_ATTRIBUTION_HEADER=0` as a substitute — that flag only drops the billing block on 2.1.237+ and does not fix mid-conversation system or `prompt_cache_key`.
+
+### Dokploy Deployment
+
+Dokploy may build directly from this Git repository; publishing a separate image is optional. Use the repository-root `Dockerfile.dokploy`, not `transports/Dockerfile`: the upstream Dockerfile sets `GOWORK=off` and can resolve published upstream `core`/`framework` modules instead of this fork's modified workspace code.
+
+Required deployment settings:
+
+- Compose file: `docker-compose.dokploy.yml`
+- Branch: `enhanced`
+- Container port: `8080`
+- Persistent volume: `/app/data`
+- Startup config: `config.dokploy.json` (mounted read-only by Compose)
+- Persistence: built-in SQLite on the `bifrost-data` volume mounted at `/app/data`
+- Health check: `/health`
+- Runtime secrets: configure provider and search credentials as environment variables; never commit them to configuration files
+
+---
+
 ## Repository Layout
 
 ```
