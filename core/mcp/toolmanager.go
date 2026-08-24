@@ -91,6 +91,7 @@ type ToolsManager struct {
 	// Byte bounds on forwarded instructions; 0 means the built-in default.
 	maxInstructionsPerClient atomic.Int64
 	maxInstructionsTotal     atomic.Int64
+	webSearchFallbackTool    atomic.Value // string; empty disables the rewrite
 	clientManager            ClientManager
 	logger                   schemas.Logger
 	agentModeExecutor        *AgentModeExecutor
@@ -208,6 +209,7 @@ func NewToolsManagerWithCodeMode(
 	manager.disableAutoToolInject.Store(config.DisableAutoToolInject)
 	manager.maxInstructionsPerClient.Store(int64(config.MaxInstructionsPerClient))
 	manager.maxInstructionsTotal.Store(int64(config.MaxInstructionsTotal))
+	manager.webSearchFallbackTool.Store(config.WebSearchFallbackTool)
 
 	manager.logger.Info("%s tool manager initialized with tool execution timeout: %v, max agent depth: %d, and code mode binding level: %s", MCPLogPrefix, config.ToolExecutionTimeout.D(), config.MaxAgentDepth, config.CodeModeBindingLevel)
 	return manager
@@ -469,6 +471,73 @@ func markToolSeenInDuplicateCheckMap(duplicateCheckMap map[string]bool, toolName
 	}
 }
 
+// rewriteUnsupportedWebSearch replaces a native server-side web_search tool with
+// one configured MCP search function when the model catalog explicitly marks the
+// selected model as not supporting native web search. The MCP tool keeps its real
+// discovered schema/name, so the normal agent loop can execute it and feed the
+// result back to the same model.
+func (m *ToolsManager) rewriteUnsupportedWebSearch(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) {
+	if req == nil || req.ResponsesRequest == nil || req.ResponsesRequest.Params == nil {
+		return
+	}
+	// Bifrost's MCP agent loop currently runs only for non-streaming Responses
+	// requests. Rewriting a stream would leak an internal MCP function call to
+	// Claude Code instead of executing it, so preserve native behavior until a
+	// buffered/iterative streaming bridge is added.
+	if req.RequestType == schemas.ResponsesStreamRequest {
+		return
+	}
+	fallbackTool, _ := m.webSearchFallbackTool.Load().(string)
+	if fallbackTool == "" {
+		return
+	}
+
+	responsesReq := req.ResponsesRequest
+	caps := schemas.ResolveModelCaps(responsesReq.Provider, responsesReq.Model)
+	// This compatibility path is explicit opt-in. A positive model-catalog claim
+	// preserves native search; missing/false support uses the configured fallback,
+	// which also covers local and custom models absent from the catalog.
+	if caps.SupportsWebSearch(false) {
+		return
+	}
+
+	hasWebSearch := false
+	kept := make([]schemas.ResponsesTool, 0, len(responsesReq.Params.Tools))
+	for _, tool := range responsesReq.Params.Tools {
+		if tool.Type == schemas.ResponsesToolTypeWebSearch || tool.Type == schemas.ResponsesToolTypeWebSearchPreview {
+			hasWebSearch = true
+			continue
+		}
+		kept = append(kept, tool)
+	}
+	if !hasWebSearch {
+		return
+	}
+
+	var replacement *schemas.ResponsesTool
+	for _, tool := range m.GetAvailableTools(ctx) {
+		if tool.Function == nil || tool.Function.Name != fallbackTool {
+			continue
+		}
+		replacement = tool.ToResponsesTool()
+		break
+	}
+	if replacement == nil {
+		m.logger.Warn("%s web search fallback tool %q is not available; preserving native web_search", MCPLogPrefix, fallbackTool)
+		return
+	}
+
+	responsesReq.Params.Tools = append(kept, *replacement)
+	if choice := responsesReq.Params.ToolChoice; choice != nil && choice.ResponsesToolChoiceStruct != nil {
+		selected := choice.ResponsesToolChoiceStruct
+		if selected.Type == schemas.ResponsesToolChoiceTypeWebSearchPreview || (selected.Name != nil && *selected.Name == "web_search") {
+			selected.Type = schemas.ResponsesToolChoiceTypeFunction
+			selected.Name = schemas.Ptr(fallbackTool)
+		}
+	}
+	m.logger.Info("%s rewrote unsupported native web_search for %s/%s to MCP tool %q", MCPLogPrefix, responsesReq.Provider, responsesReq.Model, fallbackTool)
+}
+
 // ParseAndAddToolsToRequest parses the available tools per client and adds them to the Bifrost request.
 //
 // Parameters:
@@ -483,6 +552,8 @@ func (m *ToolsManager) ParseAndAddToolsToRequest(ctx *schemas.BifrostContext, re
 	if req.ChatRequest == nil && req.ResponsesRequest == nil {
 		return req
 	}
+
+	m.rewriteUnsupportedWebSearch(ctx, req)
 
 	// When auto tool injection is disabled, only inject tools if the request
 	// has explicit context filters set (e.g. via x-bf-mcp-include-tools header).
@@ -1271,6 +1342,14 @@ func (m *ToolsManager) UpdateConfig(config *schemas.MCPToolManagerConfig) {
 	m.disableAutoToolInject.Store(config.DisableAutoToolInject)
 	m.maxInstructionsPerClient.Store(int64(config.MaxInstructionsPerClient))
 	m.maxInstructionsTotal.Store(int64(config.MaxInstructionsTotal))
+	// web_search_fallback_tool is fork-only and lives in config.json. Client-config
+	// hot reload (log retention and the other UI fields) builds this struct without
+	// it, so an empty value must keep the name loaded at process start. A non-empty
+	// value still replaces it. Clearing the tool requires a restart with the file
+	// field removed.
+	if config.WebSearchFallbackTool != "" {
+		m.webSearchFallbackTool.Store(config.WebSearchFallbackTool)
+	}
 
 	m.logger.Info("%s tool manager configuration updated with tool execution timeout: %v, max agent depth: %d, and code mode binding level: %s", MCPLogPrefix, config.ToolExecutionTimeout.D(), config.MaxAgentDepth, config.CodeModeBindingLevel)
 }
