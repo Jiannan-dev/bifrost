@@ -1179,6 +1179,13 @@ func (bifrost *Bifrost) ResponsesRequest(ctx *schemas.BifrostContext, req *schem
 		ctx = bifrost.ctx
 	}
 
+	// Search-capable turns are time-sensitive and tool-dependent. Do not let
+	// answer-level semantic caching suppress the tool decision or replay stale
+	// results. Provider prompt caching remains unaffected.
+	if mcp.RequestUsesWebSearch(req) {
+		ctx.SetValue(schemas.BifrostContextKeyBypassSemanticCache, true)
+	}
+
 	response, err := bifrost.makeResponsesRequest(ctx, req)
 	if err != nil {
 		return nil, err
@@ -1199,6 +1206,9 @@ func (bifrost *Bifrost) ResponsesRequest(ctx *schemas.BifrostContext, req *schem
 
 // ResponsesStreamRequest sends a responses stream request to the specified provider.
 func (bifrost *Bifrost) ResponsesStreamRequest(ctx *schemas.BifrostContext, req *schemas.BifrostResponsesRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	if ctx == nil {
+		ctx = bifrost.ctx
+	}
 	if req == nil {
 		return nil, &schemas.BifrostError{
 			IsBifrostError: false,
@@ -1229,6 +1239,9 @@ func (bifrost *Bifrost) ResponsesStreamRequest(ctx *schemas.BifrostContext, req 
 		}
 	}
 
+	if mcp.RequestUsesWebSearch(req) {
+		ctx.SetValue(schemas.BifrostContextKeyBypassSemanticCache, true)
+	}
 	bifrostReq := bifrost.getBifrostRequest()
 	bifrostReq.RequestType = schemas.ResponsesStreamRequest
 	bifrostReq.ResponsesRequest = req
