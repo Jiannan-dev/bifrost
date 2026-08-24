@@ -312,6 +312,10 @@ type MCPToolManagerConfig struct {
 	MaxAgentDepth         int                  `json:"max_agent_depth"`
 	CodeModeBindingLevel  CodeModeBindingLevel `json:"code_mode_binding_level,omitempty"`  // How tools are exposed in VFS: "server" or "tool"
 	DisableAutoToolInject bool                 `json:"disable_auto_tool_inject,omitempty"` // When true, MCP tools are not injected into requests by default
+	// WebSearchFallbackTool is the fully-qualified discovered MCP tool name to use
+	// when the selected model does not support a native server-side web_search tool.
+	// Example: "exa-web_search_exa". Empty disables the compatibility rewrite.
+	WebSearchFallbackTool string `json:"web_search_fallback_tool,omitempty"`
 }
 
 // UnmarshalJSON implements json.Unmarshaler so that tool_execution_timeout treats
