@@ -6048,6 +6048,11 @@
           "type": "boolean",
           "description": "When true, MCP tools are not automatically injected into requests. Tools are only included when explicitly specified via request context filters or headers, such as x-bf-mcp-include-tools or x-bf-mcp-include-clients.",
           "default": false
+        },
+        "web_search_fallback_tool": {
+          "type": "string",
+          "description": "Fully-qualified discovered MCP tool name used to replace Anthropic/OpenAI server-side web_search for models that do not support native search (for example, exa-web_search_exa). The MCP client must allow and auto-execute this tool. Empty disables the rewrite.",
+          "default": ""
         }
       }
     },

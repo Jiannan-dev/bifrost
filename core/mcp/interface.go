@@ -13,6 +13,8 @@ import (
 // This interface allows different implementations to be used interchangeably
 // in the Bifrost core.
 type MCPManagerInterface interface {
+	ForcedWebSearchExecutor
+
 	// Tool Operations
 	// AddToolsToRequest parses available MCP tools and adds them to the request
 	AddToolsToRequest(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) *schemas.BifrostRequest

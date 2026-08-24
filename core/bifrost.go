@@ -916,6 +916,22 @@ func (bifrost *Bifrost) ResponsesRequest(ctx *schemas.BifrostContext, req *schem
 		ctx = bifrost.ctx
 	}
 
+	// Search-capable turns are time-sensitive and tool-dependent. Do not let
+	// answer-level semantic caching suppress the tool decision or replay stale
+	// results. Provider prompt caching remains unaffected.
+	if mcp.RequestUsesWebSearch(req) {
+		ctx.SetValue(schemas.BifrostContextKeyBypassSemanticCache, true)
+	}
+
+	// Claude Code resolves its outer WebSearch function by issuing a dedicated
+	// forced Anthropic server-tool request. Let MCP satisfy that narrow request
+	// directly instead of forwarding it to a model without native web search.
+	if bifrost.MCPManager != nil {
+		if response, handled, err := bifrost.MCPManager.TryExecuteForcedWebSearch(ctx, req); handled {
+			return response, err
+		}
+	}
+
 	response, err := bifrost.makeResponsesRequest(ctx, req)
 	if err != nil {
 		return nil, err
@@ -936,6 +952,9 @@ func (bifrost *Bifrost) ResponsesRequest(ctx *schemas.BifrostContext, req *schem
 
 // ResponsesStreamRequest sends a responses stream request to the specified provider.
 func (bifrost *Bifrost) ResponsesStreamRequest(ctx *schemas.BifrostContext, req *schemas.BifrostResponsesRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	if ctx == nil {
+		ctx = bifrost.ctx
+	}
 	if req == nil {
 		return nil, &schemas.BifrostError{
 			IsBifrostError: false,
@@ -963,6 +982,15 @@ func (bifrost *Bifrost) ResponsesStreamRequest(ctx *schemas.BifrostContext, req 
 					ResolvedModelUsed:      req.Model,
 				},
 			}
+		}
+	}
+
+	if mcp.RequestUsesWebSearch(req) {
+		ctx.SetValue(schemas.BifrostContextKeyBypassSemanticCache, true)
+	}
+	if bifrost.MCPManager != nil {
+		if responseChan, handled, err := bifrost.MCPManager.TryExecuteForcedWebSearchStream(ctx, req); handled {
+			return responseChan, err
 		}
 	}
 

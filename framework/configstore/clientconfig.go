@@ -476,6 +476,7 @@ func (c *ClientConfig) GenerateClientConfigHashWithToolManager(tm *schemas.MCPTo
 	} else {
 		h.Write([]byte("toolMgrDisableAutoInject:false"))
 	}
+	h.Write([]byte("toolMgrWebSearchFallback:" + tm.WebSearchFallbackTool))
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
