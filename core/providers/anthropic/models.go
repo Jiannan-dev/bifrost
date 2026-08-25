@@ -87,9 +87,13 @@ func ToAnthropicListModelsResponse(response *schemas.BifrostListModelsResponse) 
 	}
 
 	for _, model := range response.Data {
-		_, modelID := schemas.ParseModelString(model.ID, schemas.Anthropic)
+		// Keep the full Bifrost id (provider/model). Stripping the known-provider
+		// prefix made Anthropic /v1/models look like native Anthropic, but clients
+		// then send the cropped id back and ParseModelString mis-routes it — e.g.
+		// CommandCode/deepseek/... becomes deepseek/... and hits the built-in
+		// deepseek provider. OpenAI list-models already returns the prefixed id.
 		anthropicModel := AnthropicModel{
-			ID:             modelID,
+			ID:             model.ID,
 			Type:           "model",
 			MaxInputTokens: model.MaxInputTokens,
 			MaxTokens:      model.MaxOutputTokens,
