@@ -1,0 +1,8 @@
+{
+  "mcp": {
+    "tool_manager_config": {
+      "disable_auto_tool_inject": true,
+      "tool_execution_timeout": 60
+    }
+  }
+}
