@@ -1,0 +1,29 @@
+# CLIProxyAPI sidecar config. The api-keys placeholder is replaced at
+# container start from CLIPROXY_API_KEY (set in Dokploy). Do not put a
+# real key in this file.
+#
+# auth-dir must be set explicitly in Docker or the process fails to boot.
+# Token files land on the cliproxy-auth volume at /root/.cli-proxy-api.
+
+host: ""
+port: 8317
+auth-dir: "~/.cli-proxy-api"
+debug: false
+request-retry: 3
+logging-to-file: true
+
+api-keys:
+  - "__CLIPROXY_API_KEY__"
+
+remote-management:
+  allow-remote: false
+  secret-key: ""
+  disable-control-panel: true
+
+streaming:
+  keepalive-seconds: 15
+  bootstrap-retries: 1
+
+quota-exceeded:
+  switch-project: true
+  switch-preview-model: true
