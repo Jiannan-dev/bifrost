@@ -1,0 +1,70 @@
+services:
+  bifrost:
+    build:
+      context: .
+      dockerfile: Dockerfile.dokploy
+      args:
+        VERSION: ${BIFROST_VERSION:-enhanced}
+    restart: unless-stopped
+    environment:
+      APP_PORT: "8080"
+      APP_HOST: "0.0.0.0"
+      APP_DIR: /app/data
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      LOG_STYLE: json
+      BIFROST_SETUP_TOKEN: ${BIFROST_SETUP_TOKEN:?Set BIFROST_SETUP_TOKEN in Dokploy}
+      BIFROST_ENCRYPTION_KEY: ${BIFROST_ENCRYPTION_KEY:?Set BIFROST_ENCRYPTION_KEY in Dokploy}
+      BIFROST_ENV_LABEL: ${BIFROST_ENV_LABEL:-prod}
+      GOMEMLIMIT: ${GOMEMLIMIT:-}
+      # Same value the UI key should reference as env.CLIPROXY_API_KEY.
+      CLIPROXY_API_KEY: ${CLIPROXY_API_KEY:?Set CLIPROXY_API_KEY in Dokploy}
+    expose:
+      - "8080"
+    volumes:
+      - bifrost-data:/app/data
+      - ./config.dokploy.json:/app/data/config.json:ro
+    depends_on:
+      cli-proxy-api:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/health"]
+      interval: 30s
+      timeout: 10s
+      start_period: 15s
+      retries: 3
+
+  # OpenAI Codex OAuth sidecar. Not published; Bifrost reaches it as
+  # http://cli-proxy-api:8317 (no /v1 suffix). After first deploy, log in once:
+  #   docker compose exec -it cli-proxy-api ./CLIProxyAPI -codex-device-login
+  cli-proxy-api:
+    image: ${CLIPROXY_IMAGE:-eceasy/cli-proxy-api:v7.2.141}
+    restart: unless-stopped
+    environment:
+      CLIPROXY_API_KEY: ${CLIPROXY_API_KEY:?Set CLIPROXY_API_KEY in Dokploy}
+      TZ: ${TZ:-Asia/Shanghai}
+    expose:
+      - "8317"
+    volumes:
+      - ./cliproxy.config.yaml:/CLIProxyAPI/config.yaml.template:ro
+      - cliproxy-auth:/root/.cli-proxy-api
+      - cliproxy-logs:/CLIProxyAPI/logs
+    working_dir: /CLIProxyAPI
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        set -euo pipefail
+        : "$${CLIPROXY_API_KEY:?CLIPROXY_API_KEY is required}"
+        template=$$(< /CLIProxyAPI/config.yaml.template)
+        printf '%s\n' "$${template//__CLIPROXY_API_KEY__/$${CLIPROXY_API_KEY}}" > /CLIProxyAPI/config.yaml
+        exec ./CLIProxyAPI
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/127.0.0.1/8317'"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 5
+
+volumes:
+  bifrost-data:
+  cliproxy-auth:
+  cliproxy-logs:
