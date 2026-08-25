@@ -1,0 +1,66 @@
+# syntax=docker/dockerfile:1.7
+
+# Build the UI from this fork.
+FROM node:25-alpine3.23@sha256:bdf2cca6fe3dabd014ea60163eca3f0f7015fbd5c7ee1b0e9ccb4ced6eb02ef4 AS ui-builder
+WORKDIR /src/ui
+RUN apk upgrade --no-cache
+COPY ui/package*.json ./
+RUN --mount=type=cache,target=/root/.npm npm ci
+COPY ui/ ./
+RUN npm run build-enterprise
+
+# Build every Go module from this checkout through a local workspace. This is
+# intentionally different from transports/Dockerfile (GOWORK=off), which may
+# resolve published upstream core/framework modules and omit fork changes.
+FROM golang:1.27.0-alpine3.24@sha256:4c9fe60190a2a3350ddc51de80d0224b8a6698d12bdfc999fee45ea9d6c46dbc AS go-builder
+WORKDIR /src
+RUN apk upgrade --no-cache && apk add --no-cache gcc musl-dev sqlite-dev binutils binutils-gold
+ENV CGO_ENABLED=1 GOOS=linux
+
+COPY core/go.mod core/go.sum ./core/
+COPY framework/go.mod framework/go.sum ./framework/
+COPY transports/go.mod transports/go.sum ./transports/
+COPY plugins/ ./plugins/
+COPY core/ ./core/
+COPY framework/ ./framework/
+COPY transports/ ./transports/
+COPY --from=ui-builder /src/ui/out ./transports/bifrost-http/ui
+
+# Generate the workspace at build time so it remains valid even if upstream adds
+# or removes plugin modules. Every plugin with a go.mod participates.
+RUN go work init ./core ./framework ./transports && \
+    for mod in plugins/*/go.mod; do go work use "./${mod%/go.mod}"; done
+
+ARG VERSION=fork-main
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    cd transports && go build \
+    -ldflags="-w -s -X main.Version=v${VERSION} -extldflags '-static'" \
+    -trimpath -tags sqlite_static \
+    -o /out/bifrost ./bifrost-http
+
+FROM alpine:3.23.5@sha256:fd791d74b68913cbb027c6546007b3f0d3bc45125f797758156952bc2d6daf40
+WORKDIR /app
+RUN apk upgrade --no-cache && apk add --no-cache musl libgcc ca-certificates zlib && \
+    adduser -D -s /bin/sh appuser && mkdir -p /app/data/logs && \
+    chown -R appuser:0 /app && chmod -R g=rwX /app/data
+
+COPY --from=go-builder /out/bifrost /app/main
+COPY transports/docker-entrypoint.sh /app/docker-entrypoint.sh
+RUN chmod +x /app/main /app/docker-entrypoint.sh
+
+ENV APP_PORT=8080 \
+    APP_HOST=0.0.0.0 \
+    LOG_LEVEL=info \
+    LOG_STYLE=json \
+    APP_DIR=/app/data \
+    GOGC="" \
+    GOMEMLIMIT=""
+
+USER 1000:0
+VOLUME ["/app/data"]
+EXPOSE 8080
+HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
+    CMD wget -q -O /dev/null http://127.0.0.1:${APP_PORT}/health || exit 1
+ENTRYPOINT ["/app/docker-entrypoint.sh"]
+CMD ["/app/main"]
