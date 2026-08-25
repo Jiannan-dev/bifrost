@@ -1,0 +1,9 @@
+{
+  "mcp": {
+    "tool_manager_config": {
+      "web_search_fallback_tool": "Exa-web_search_exa",
+      "disable_auto_tool_inject": true,
+      "tool_execution_timeout": 60
+    }
+  }
+}
