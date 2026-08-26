@@ -276696,6 +276696,245 @@
           }
         }
       ]
+    },
+    {
+      "name": "262. Claude Code Responses→Chat fallback cache hygiene (fork) (responses-chat-cache-hygiene)",
+      "description": "Claude Code serves custom OpenAI-compat providers (CommandCode) and native DeepSeek/Groq via Responses→ToChatRequest. Until this fork change, that converter forwarded prompt_cache_key*, the per-request x-anthropic-billing-header system block (cch= nonce), and mid-conversation role:system budget turns — all of which bust DeepSeek/GLM implicit prefix cache. Custom providers skip filterOpenAISpecificParameters, so ToChatRequest is the only strip.\n\nUpstream already inlines mid-conversation system on Anthropic/Bedrock/Gemini egress (#6334 / #4534), not on ToChatRequest. These cases assert the OUTBOUND chat body via x-bf-send-back-raw-request rather than cache-hit tokens (those need CommandCode, which is not in the public harness provider set).\n\nNative OpenAI /v1/chat/completions must keep prompt_cache_key — do not copy these assertions onto OpenAI chat cases.\n\nA 400 is NOT guarded: DeepSeek/Groq rejecting the un-normalized shape is a feature failure.",
+      "item": [
+        {
+          "name": "deepseek/deepseek-v4-flash native /v1/responses Claude Code cache hygiene",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('chat fallback cache hygiene: 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var body = pm.response.json() || {};",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('chat fallback cache hygiene: raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored').to.be.an('object');",
+                  "});",
+                  "if (!rr || typeof rr !== 'object') { return; }",
+                  "var dump = JSON.stringify(rr);",
+                  "var msgs = rr.messages || [];",
+                  "pm.test('chat fallback cache hygiene: billing header did not egress', function () {",
+                  "  pm.expect(dump, 'outbound: ' + dump.slice(0, 500)).to.not.include('x-anthropic-billing-header:');",
+                  "  pm.expect(dump, 'outbound: ' + dump.slice(0, 500)).to.not.include('nonce-must-not-egress');",
+                  "});",
+                  "pm.test('chat fallback cache hygiene: leading system prompt survived', function () {",
+                  "  pm.expect(dump, 'outbound: ' + dump.slice(0, 500)).to.include('You are a terse assistant.');",
+                  "});",
+                  "pm.test('chat fallback cache hygiene: prompt_cache_key did not egress', function () {",
+                  "  pm.expect(rr.prompt_cache_key, 'prompt_cache_key leaked: ' + dump.slice(0, 500)).to.be.undefined;",
+                  "  pm.expect(rr.prompt_cache_retention, 'prompt_cache_retention leaked').to.be.undefined;",
+                  "  pm.expect(rr.prompt_cache_options, 'prompt_cache_options leaked').to.be.undefined;",
+                  "});",
+                  "pm.test('chat fallback cache hygiene: no mid-conversation role:system', function () {",
+                  "  var seenNonSystem = false;",
+                  "  var mid = [];",
+                  "  for (var i = 0; i < msgs.length; i++) {",
+                  "    if (msgs[i].role === 'system') {",
+                  "      if (seenNonSystem) { mid.push(i); }",
+                  "    } else { seenNonSystem = true; }",
+                  "  }",
+                  "  pm.expect(mid, 'mid-conversation system roles at ' + JSON.stringify(mid) + ': ' + dump.slice(0, 800)).to.eql([]);",
+                  "});",
+                  "pm.test('chat fallback cache hygiene: mid-conv system inlined as <system-reminder> user turn', function () {",
+                  "  var hit = null;",
+                  "  for (var i = 0; i < msgs.length; i++) {",
+                  "    if (JSON.stringify(msgs[i]).indexOf('The user just opened src/main.go.') !== -1) { hit = msgs[i]; }",
+                  "  }",
+                  "  pm.expect(hit, 'reminder absent from messages: ' + dump.slice(0, 800)).to.not.eql(null);",
+                  "  pm.expect(hit && hit.role, 'messages: ' + dump.slice(0, 800)).to.eql('user');",
+                  "  pm.expect(JSON.stringify(hit), 'envelope missing: ' + dump.slice(0, 800)).to.include('system-reminder');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"deepseek/deepseek-v4-flash\",\"max_output_tokens\":64,\"prompt_cache_key\":\"cc-session-should-not-egress\",\"prompt_cache_retention\":\"24h\",\"prompt_cache_options\":{\"mode\":\"explicit\",\"ttl\":\"30m\"},\"input\":[{\"role\":\"system\",\"content\":[{\"type\":\"input_text\",\"text\":\"x-anthropic-billing-header: cc_version=2.1.234; cch=nonce-must-not-egress\"},{\"type\":\"input_text\",\"text\":\"You are a terse assistant.\"}]},{\"role\":\"user\",\"content\":\"Hello\"},{\"role\":\"assistant\",\"content\":\"Hi.\"},{\"role\":\"system\",\"content\":\"The user just opened src/main.go.\"},{\"role\":\"user\",\"content\":\"What file am I in? Answer with the path only.\"}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "deepseek/deepseek-v4-flash /openai/v1/responses Claude Code cache hygiene",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('chat fallback cache hygiene: 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var body = pm.response.json() || {};",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('chat fallback cache hygiene: raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored').to.be.an('object');",
+                  "});",
+                  "if (!rr || typeof rr !== 'object') { return; }",
+                  "var dump = JSON.stringify(rr);",
+                  "var msgs = rr.messages || [];",
+                  "pm.test('chat fallback cache hygiene: billing header did not egress', function () {",
+                  "  pm.expect(dump, 'outbound: ' + dump.slice(0, 500)).to.not.include('x-anthropic-billing-header:');",
+                  "  pm.expect(dump, 'outbound: ' + dump.slice(0, 500)).to.not.include('nonce-must-not-egress');",
+                  "});",
+                  "pm.test('chat fallback cache hygiene: leading system prompt survived', function () {",
+                  "  pm.expect(dump, 'outbound: ' + dump.slice(0, 500)).to.include('You are a terse assistant.');",
+                  "});",
+                  "pm.test('chat fallback cache hygiene: prompt_cache_key did not egress', function () {",
+                  "  pm.expect(rr.prompt_cache_key, 'prompt_cache_key leaked: ' + dump.slice(0, 500)).to.be.undefined;",
+                  "  pm.expect(rr.prompt_cache_retention, 'prompt_cache_retention leaked').to.be.undefined;",
+                  "  pm.expect(rr.prompt_cache_options, 'prompt_cache_options leaked').to.be.undefined;",
+                  "});",
+                  "pm.test('chat fallback cache hygiene: no mid-conversation role:system', function () {",
+                  "  var seenNonSystem = false;",
+                  "  var mid = [];",
+                  "  for (var i = 0; i < msgs.length; i++) {",
+                  "    if (msgs[i].role === 'system') {",
+                  "      if (seenNonSystem) { mid.push(i); }",
+                  "    } else { seenNonSystem = true; }",
+                  "  }",
+                  "  pm.expect(mid, 'mid-conversation system roles at ' + JSON.stringify(mid) + ': ' + dump.slice(0, 800)).to.eql([]);",
+                  "});",
+                  "pm.test('chat fallback cache hygiene: mid-conv system inlined as <system-reminder> user turn', function () {",
+                  "  var hit = null;",
+                  "  for (var i = 0; i < msgs.length; i++) {",
+                  "    if (JSON.stringify(msgs[i]).indexOf('The user just opened src/main.go.') !== -1) { hit = msgs[i]; }",
+                  "  }",
+                  "  pm.expect(hit, 'reminder absent from messages: ' + dump.slice(0, 800)).to.not.eql(null);",
+                  "  pm.expect(hit && hit.role, 'messages: ' + dump.slice(0, 800)).to.eql('user');",
+                  "  pm.expect(JSON.stringify(hit), 'envelope missing: ' + dump.slice(0, 800)).to.include('system-reminder');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"deepseek/deepseek-v4-flash\",\"max_output_tokens\":64,\"prompt_cache_key\":\"cc-session-should-not-egress\",\"prompt_cache_retention\":\"24h\",\"prompt_cache_options\":{\"mode\":\"explicit\",\"ttl\":\"30m\"},\"input\":[{\"role\":\"system\",\"content\":[{\"type\":\"input_text\",\"text\":\"x-anthropic-billing-header: cc_version=2.1.234; cch=nonce-must-not-egress\"},{\"type\":\"input_text\",\"text\":\"You are a terse assistant.\"}]},{\"role\":\"user\",\"content\":\"Hello\"},{\"role\":\"assistant\",\"content\":\"Hi.\"},{\"role\":\"system\",\"content\":\"The user just opened src/main.go.\"},{\"role\":\"user\",\"content\":\"What file am I in? Answer with the path only.\"}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "deepseek/deepseek-v4-flash native /v1/responses mixed billing block keeps its instructions",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// A block that starts with the billing line but also carries instructions is not",
+                  "// attribution: upstream's Anthropic ingress keeps such mixed blocks intact, so this",
+                  "// converter must too. Dropping the message loses the instructions.",
+                  "pm.test('mixed billing block: 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var body = pm.response.json() || {};",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('mixed billing block: raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored').to.be.an('object');",
+                  "});",
+                  "if (!rr || typeof rr !== 'object') { return; }",
+                  "var dump = JSON.stringify(rr);",
+                  "var msgs = rr.messages || [];",
+                  "var hit = null;",
+                  "for (var i = 0; i < msgs.length; i++) {",
+                  "  if (JSON.stringify(msgs[i]).indexOf('Be terse.') !== -1) { hit = msgs[i]; }",
+                  "}",
+                  "pm.test('mixed billing block: instructions survived on the outbound request', function () {",
+                  "  pm.expect(hit, 'the whole system block was dropped, instructions lost: ' + dump.slice(0, 800)).to.not.eql(null);",
+                  "  pm.expect(hit && hit.role, 'messages: ' + dump.slice(0, 800)).to.eql('system');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"deepseek/deepseek-v4-flash\",\"max_output_tokens\":64,\"input\":[{\"role\":\"system\",\"content\":[{\"type\":\"input_text\",\"text\":\"x-anthropic-billing-header: cc_version=2.1.234; cch=abc\\nBe terse.\"}]},{\"role\":\"user\",\"content\":\"Hello\"}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }
