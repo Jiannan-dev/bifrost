@@ -60,6 +60,236 @@ func TestToChatRequest_NormalizesDeveloperRoleToSystemForFallback(t *testing.T) 
 	}
 }
 
+func TestToChatMessages_PreservesMultipleTextBlocks(t *testing.T) {
+	messages := []ResponsesMessage{{
+		Role: Ptr(ResponsesInputMessageRoleSystem),
+		Content: &ResponsesMessageContent{
+			ContentBlocks: []ResponsesMessageContentBlock{
+				{Type: ResponsesInputMessageContentBlockTypeText, Text: Ptr("You are a Claude agent.")},
+				{Type: ResponsesInputMessageContentBlockTypeText, Text: Ptr("\nYou are an interactive agent.")},
+			},
+		},
+	}}
+
+	chatMessages := ToChatMessages(messages)
+	if len(chatMessages) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(chatMessages))
+	}
+	if chatMessages[0].Content == nil || len(chatMessages[0].Content.ContentBlocks) != 2 {
+		t.Fatalf("expected 2 content blocks, got %#v", chatMessages[0].Content)
+	}
+}
+
+func TestToChatMessages_PreservesClaudeCodeAttributionBlock(t *testing.T) {
+	billing := "x-anthropic-billing-header: cc_version=2.1.234; cch=abc"
+	messages := []ResponsesMessage{{
+		Role: Ptr(ResponsesInputMessageRoleSystem),
+		Content: &ResponsesMessageContent{
+			ContentBlocks: []ResponsesMessageContentBlock{
+				{Type: ResponsesInputMessageContentBlockTypeText, Text: Ptr(billing)},
+				{Type: ResponsesInputMessageContentBlockTypeText, Text: Ptr("You are a Claude agent.")},
+			},
+		},
+	}}
+
+	chatMessages := ToChatMessages(messages)
+	if len(chatMessages) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(chatMessages))
+	}
+	if chatMessages[0].Content == nil || len(chatMessages[0].Content.ContentBlocks) != 2 {
+		t.Fatalf("ToChatMessages must not strip attribution (used outside chat fallback), got %#v", chatMessages[0].Content)
+	}
+}
+
+func TestToChatRequest_StripsClaudeCodeAttributionBlock(t *testing.T) {
+	req := &BifrostResponsesRequest{
+		Input: []ResponsesMessage{{
+			Role: Ptr(ResponsesInputMessageRoleSystem),
+			Content: &ResponsesMessageContent{
+				ContentBlocks: []ResponsesMessageContentBlock{
+					{Type: ResponsesInputMessageContentBlockTypeText, Text: Ptr("x-anthropic-billing-header: cc_version=2.1.234; cch=abc")},
+					{Type: ResponsesInputMessageContentBlockTypeText, Text: Ptr("You are a Claude agent.")},
+				},
+			},
+		}},
+	}
+
+	chatReq := req.ToChatRequest()
+	if len(chatReq.Input) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(chatReq.Input))
+	}
+	content := chatReq.Input[0].Content
+	if content == nil {
+		t.Fatal("expected remaining system content")
+	}
+	got := chatMessagePlainText(content)
+	if got != "You are a Claude agent." {
+		t.Fatalf("expected remaining system text, got %q", got)
+	}
+	if strings.Contains(got, "x-anthropic-billing-header:") {
+		t.Fatalf("attribution must be stripped on chat fallback, got %q", got)
+	}
+}
+
+func TestToChatRequest_DropsAttributionOnlySystem(t *testing.T) {
+	req := &BifrostResponsesRequest{
+		Input: []ResponsesMessage{
+			{Role: Ptr(ResponsesInputMessageRoleSystem), Content: &ResponsesMessageContent{ContentStr: Ptr("x-anthropic-billing-header: cc_version=2.1.234; cch=abc")}},
+			{Role: Ptr(ResponsesInputMessageRoleSystem), Content: &ResponsesMessageContent{ContentStr: Ptr("You are a Claude agent.")}},
+			{Role: Ptr(ResponsesInputMessageRoleUser), Content: &ResponsesMessageContent{ContentStr: Ptr("hi")}},
+		},
+	}
+
+	chatReq := req.ToChatRequest()
+	if len(chatReq.Input) != 2 {
+		t.Fatalf("expected attribution-only system dropped, got %d messages: %#v", len(chatReq.Input), chatReq.Input)
+	}
+	if chatReq.Input[0].Role != ChatMessageRoleSystem {
+		t.Fatalf("expected remaining leading system, got %q", chatReq.Input[0].Role)
+	}
+	if got := chatMessagePlainText(chatReq.Input[0].Content); got != "You are a Claude agent." {
+		t.Fatalf("expected remaining system text, got %q", got)
+	}
+}
+
+func TestToChatRequest_DoesNotStripAttributionFromUser(t *testing.T) {
+	billing := "x-anthropic-billing-header: cc_version=2.1.234; cch=abc"
+	req := &BifrostResponsesRequest{
+		Input: []ResponsesMessage{
+			{Role: Ptr(ResponsesInputMessageRoleUser), Content: &ResponsesMessageContent{ContentStr: Ptr(billing)}},
+		},
+	}
+
+	chatReq := req.ToChatRequest()
+	if len(chatReq.Input) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(chatReq.Input))
+	}
+	if chatReq.Input[0].Role != ChatMessageRoleUser {
+		t.Fatalf("expected user, got %q", chatReq.Input[0].Role)
+	}
+	if got := chatMessagePlainText(chatReq.Input[0].Content); got != billing {
+		t.Fatalf("user attribution text must be preserved, got %q", got)
+	}
+}
+
+func TestToChatMessages_KeepsMixedTextAndImageBlocks(t *testing.T) {
+	messages := []ResponsesMessage{{
+		Role: Ptr(ResponsesInputMessageRoleUser),
+		Content: &ResponsesMessageContent{
+			ContentBlocks: []ResponsesMessageContentBlock{
+				{Type: ResponsesInputMessageContentBlockTypeText, Text: Ptr("look")},
+				{
+					Type: ResponsesInputMessageContentBlockTypeImage,
+					ResponsesInputMessageContentBlockImage: &ResponsesInputMessageContentBlockImage{
+						ImageURL: Ptr("https://example.com/a.png"),
+					},
+				},
+			},
+		},
+	}}
+
+	chatMessages := ToChatMessages(messages)
+	if len(chatMessages) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(chatMessages))
+	}
+	if chatMessages[0].Content == nil || len(chatMessages[0].Content.ContentBlocks) != 2 {
+		t.Fatalf("expected 2 content blocks, got %#v", chatMessages[0].Content)
+	}
+}
+
+func TestToChatRequest_DemotesMidConversationSystemMessages(t *testing.T) {
+	req := &BifrostResponsesRequest{
+		Input: []ResponsesMessage{
+			{Role: Ptr(ResponsesInputMessageRoleSystem), Content: &ResponsesMessageContent{ContentStr: Ptr("main system")}},
+			{Role: Ptr(ResponsesInputMessageRoleUser), Content: &ResponsesMessageContent{ContentStr: Ptr("read hello")}},
+			{Role: Ptr(ResponsesInputMessageRoleSystem), Content: &ResponsesMessageContent{ContentStr: Ptr("<total_tokens>15000000 tokens left</total_tokens>")}},
+		},
+	}
+
+	chatReq := req.ToChatRequest()
+	if len(chatReq.Input) != 3 {
+		t.Fatalf("expected 3 messages, got %d", len(chatReq.Input))
+	}
+	if chatReq.Input[0].Role != ChatMessageRoleSystem {
+		t.Fatalf("expected leading system, got %q", chatReq.Input[0].Role)
+	}
+	if chatReq.Input[1].Role != ChatMessageRoleUser {
+		t.Fatalf("expected user, got %q", chatReq.Input[1].Role)
+	}
+	if chatReq.Input[2].Role != ChatMessageRoleUser {
+		t.Fatalf("expected mid-conversation system demoted to user, got %q", chatReq.Input[2].Role)
+	}
+	if chatReq.Input[2].Content == nil || chatReq.Input[2].Content.ContentStr == nil {
+		t.Fatal("expected wrapped reminder text")
+	}
+	got := *chatReq.Input[2].Content.ContentStr
+	want := "<system-reminder>\n<total_tokens>15000000 tokens left</total_tokens>\n</system-reminder>\n"
+	if got != want {
+		t.Fatalf("expected system-reminder wrap %q, got %q", want, got)
+	}
+}
+
+func TestToChatRequest_DemotesMidConversationSystemContentBlocks(t *testing.T) {
+	req := &BifrostResponsesRequest{
+		Input: []ResponsesMessage{
+			{Role: Ptr(ResponsesInputMessageRoleSystem), Content: &ResponsesMessageContent{ContentStr: Ptr("main system")}},
+			{Role: Ptr(ResponsesInputMessageRoleUser), Content: &ResponsesMessageContent{ContentStr: Ptr("read hello")}},
+			{
+				Role: Ptr(ResponsesInputMessageRoleSystem),
+				Content: &ResponsesMessageContent{
+					ContentBlocks: []ResponsesMessageContentBlock{
+						{Type: ResponsesInputMessageContentBlockTypeText, Text: Ptr("<total_tokens>")},
+						{Type: ResponsesInputMessageContentBlockTypeText, Text: Ptr("15000000 tokens left</total_tokens>")},
+					},
+				},
+			},
+		},
+	}
+
+	chatReq := req.ToChatRequest()
+	if len(chatReq.Input) != 3 {
+		t.Fatalf("expected 3 messages, got %d", len(chatReq.Input))
+	}
+	if chatReq.Input[2].Role != ChatMessageRoleUser {
+		t.Fatalf("expected mid-conversation system demoted to user, got %q", chatReq.Input[2].Role)
+	}
+	got := chatMessagePlainText(chatReq.Input[2].Content)
+	if !strings.Contains(got, "<system-reminder>") || !strings.Contains(got, "<total_tokens>15000000 tokens left</total_tokens>") {
+		t.Fatalf("expected joined blocks wrapped as reminder, got %q", got)
+	}
+}
+
+func TestToChatRequest_DropsPromptCacheKeyForFallback(t *testing.T) {
+	key := "session-cache-key"
+	retention := "24h"
+	mode := "explicit"
+	ttl := "30m"
+	req := &BifrostResponsesRequest{
+		Input: []ResponsesMessage{
+			{Role: Ptr(ResponsesInputMessageRoleUser), Content: &ResponsesMessageContent{ContentStr: Ptr("hi")}},
+		},
+		Params: &ResponsesParameters{
+			PromptCacheKey:       &key,
+			PromptCacheRetention: &retention,
+			PromptCacheOptions:   &PromptCacheOptions{Mode: &mode, TTL: &ttl},
+		},
+	}
+
+	chatReq := req.ToChatRequest()
+	if chatReq.Params == nil {
+		t.Fatal("expected params")
+	}
+	if chatReq.Params.PromptCacheKey != nil {
+		t.Fatalf("expected prompt_cache_key to be dropped, got %q", *chatReq.Params.PromptCacheKey)
+	}
+	if chatReq.Params.PromptCacheRetention != nil {
+		t.Fatalf("expected prompt_cache_retention to be dropped, got %q", *chatReq.Params.PromptCacheRetention)
+	}
+	if chatReq.Params.PromptCacheOptions != nil {
+		t.Fatalf("expected prompt_cache_options to be dropped, got %#v", chatReq.Params.PromptCacheOptions)
+	}
+}
+
 func TestToChatMessages_LeavesExistingSupportedRolesUnchanged(t *testing.T) {
 	messages := []ResponsesMessage{
 		{Role: Ptr(ResponsesInputMessageRoleSystem)},
