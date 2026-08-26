@@ -1217,23 +1217,24 @@ func (brr *BifrostResponsesRequest) ToChatRequest() *BifrostChatRequest {
 		}}, bcr.Input...)
 	}
 
-	normalizeDeveloperRoleForChatFallback(bcr.Input)
+	bcr.Input = prepareChatFallbackMessages(bcr.Input)
 
 	// Convert Parameters
 	if brr.Params != nil {
 		bcr.Params = &ChatParameters{
 			// Map common fields
-			ParallelToolCalls:    brr.Params.ParallelToolCalls,
-			PromptCacheKey:       brr.Params.PromptCacheKey,
-			PromptCacheRetention: brr.Params.PromptCacheRetention,
-			PromptCacheOptions:   brr.Params.PromptCacheOptions,
-			SafetyIdentifier:     brr.Params.SafetyIdentifier,
-			ServiceTier:          brr.Params.ServiceTier,
-			Store:                brr.Params.Store,
-			Temperature:          brr.Params.Temperature,
-			TopLogProbs:          brr.Params.TopLogProbs,
-			TopP:                 brr.Params.TopP,
-			ExtraParams:          brr.Params.ExtraParams,
+			ParallelToolCalls: brr.Params.ParallelToolCalls,
+			// prompt_cache_key is an OpenAI isolation field. DeepSeek/GLM implicit
+			// prefix cache does not support it (official DeepSeek: "not supported",
+			// silently ignored; Volcengine/strict compat: 400). Native chat clients
+			// that hit CommandCode cache do not send it; Claude Code does.
+			SafetyIdentifier: brr.Params.SafetyIdentifier,
+			ServiceTier:      brr.Params.ServiceTier,
+			Store:            brr.Params.Store,
+			Temperature:      brr.Params.Temperature,
+			TopLogProbs:      brr.Params.TopLogProbs,
+			TopP:             brr.Params.TopP,
+			ExtraParams:      brr.Params.ExtraParams,
 
 			// Map specific fields
 			MaxCompletionTokens: brr.Params.MaxOutputTokens, // max_output_tokens -> max_completion_tokens
@@ -1316,6 +1317,133 @@ func normalizeDeveloperRoleForChatFallback(messages []ChatMessage) {
 		if messages[i].Role == ChatMessageRoleDeveloper {
 			messages[i].Role = ChatMessageRoleSystem
 		}
+	}
+}
+
+const claudeSystemReminderStart = "<system-reminder>"
+
+// prepareChatFallbackMessages applies Claude Code → OpenAI-compat chat
+// fallback hygiene. ToChatRequest is the Responses→Chat translator used when
+// a provider has Responses disabled (custom CommandCode, DeepSeek/Groq chat
+// fallback). Kept off ToChatMessages: that converter is also used by
+// Replicate/Perplexity and round-trips.
+func prepareChatFallbackMessages(messages []ChatMessage) []ChatMessage {
+	messages = stripClaudeCodeAttributionFromSystemMessages(messages)
+	normalizeDeveloperRoleForChatFallback(messages)
+	demoteMidConversationSystemMessagesForChatFallback(messages)
+	return messages
+}
+
+// isClaudeCodeAttributionSystemText reports Claude Code's billing/fingerprint
+// system block. The cch= nonce changes per request and busts prefix cache on
+// DeepSeek/GLM implicit caches. CLIProxyAPI strips the same prefix on
+// non-Anthropic translations; we only strip on this fallback path.
+func isClaudeCodeAttributionSystemText(text string) bool {
+	return strings.HasPrefix(strings.TrimSpace(text), "x-anthropic-billing-header:")
+}
+
+func stripClaudeCodeAttributionFromSystemMessages(messages []ChatMessage) []ChatMessage {
+	if len(messages) == 0 {
+		return messages
+	}
+	out := make([]ChatMessage, 0, len(messages))
+	for _, msg := range messages {
+		if msg.Role != ChatMessageRoleSystem && msg.Role != ChatMessageRoleDeveloper {
+			out = append(out, msg)
+			continue
+		}
+		msg.Content = stripAttributionContent(msg.Content)
+		if chatContentEmpty(msg.Content) {
+			continue
+		}
+		out = append(out, msg)
+	}
+	return out
+}
+
+func stripAttributionContent(content *ChatMessageContent) *ChatMessageContent {
+	if content == nil {
+		return nil
+	}
+	if content.ContentStr != nil {
+		if isClaudeCodeAttributionSystemText(*content.ContentStr) {
+			return nil
+		}
+		return content
+	}
+	if len(content.ContentBlocks) == 0 {
+		return content
+	}
+	kept := make([]ChatContentBlock, 0, len(content.ContentBlocks))
+	for _, block := range content.ContentBlocks {
+		if block.Type == ChatContentBlockTypeText && block.Text != nil && isClaudeCodeAttributionSystemText(*block.Text) {
+			continue
+		}
+		kept = append(kept, block)
+	}
+	if len(kept) == 0 {
+		return nil
+	}
+	return &ChatMessageContent{ContentBlocks: kept}
+}
+
+func chatContentEmpty(content *ChatMessageContent) bool {
+	if content == nil {
+		return true
+	}
+	if content.ContentStr != nil {
+		return strings.TrimSpace(*content.ContentStr) == ""
+	}
+	return len(content.ContentBlocks) == 0
+}
+
+func chatMessagePlainText(content *ChatMessageContent) string {
+	if content == nil {
+		return ""
+	}
+	if content.ContentStr != nil {
+		return *content.ContentStr
+	}
+	var b strings.Builder
+	for _, block := range content.ContentBlocks {
+		if block.Text != nil {
+			b.WriteString(*block.Text)
+		}
+	}
+	return b.String()
+}
+
+// wrapClaudeSystemReminder matches inlineMidConversationSystem
+// (anthropic/utils.go) and the Bedrock/Gemini Claude Code inliners.
+func wrapClaudeSystemReminder(text string) string {
+	if strings.Contains(text, claudeSystemReminderStart) {
+		return text
+	}
+	return "<system-reminder>\n" + text + "\n</system-reminder>\n"
+}
+
+// demoteMidConversationSystemMessagesForChatFallback keeps the leading system
+// block, then rewrites later role:system turns to user reminders.
+//
+// Same contract as CLIProxyAPI ConvertClaudeRequestToOpenAI and upstream
+// #6334/#4534 (Gemini/Bedrock egress): OpenAI-compat providers treat only the
+// first system message as the system prompt. Claude Code's token-budget /
+// USD-remaining system turns must not stay as role:system or they get hoisted
+// and bust implicit prefix cache.
+func demoteMidConversationSystemMessagesForChatFallback(messages []ChatMessage) {
+	seenNonSystem := false
+	for i := range messages {
+		if messages[i].Role == ChatMessageRoleSystem {
+			if seenNonSystem {
+				messages[i].Role = ChatMessageRoleUser
+				if text := strings.TrimSpace(chatMessagePlainText(messages[i].Content)); text != "" {
+					wrapped := wrapClaudeSystemReminder(text)
+					messages[i].Content = &ChatMessageContent{ContentStr: Ptr(wrapped)}
+				}
+			}
+			continue
+		}
+		seenNonSystem = true
 	}
 }
 

@@ -138735,6 +138735,183 @@
       ]
     },
     {
+      "name": "69. Claude Code Responses→Chat fallback cache hygiene (fork)",
+      "description": "Claude Code serves custom OpenAI-compat providers (CommandCode) and native DeepSeek/Groq via Responses→ToChatRequest. Until this fork change, that converter forwarded prompt_cache_key*, the per-request x-anthropic-billing-header system block (cch= nonce), and mid-conversation role:system budget turns — all of which bust DeepSeek/GLM implicit prefix cache. Custom providers skip filterOpenAISpecificParameters, so ToChatRequest is the only strip.\n\nUpstream already inlines mid-conversation system on Anthropic/Bedrock/Gemini egress (#6334 / #4534), not on ToChatRequest. These cases assert the OUTBOUND chat body via x-bf-send-back-raw-request rather than cache-hit tokens (those need CommandCode, which is not in the public harness provider set).\n\nNative OpenAI /v1/chat/completions must keep prompt_cache_key — do not copy these assertions onto OpenAI chat cases.\n\nA 400 is NOT guarded: DeepSeek/Groq rejecting the un-normalized shape is a feature failure.",
+      "item": [
+        {
+          "name": "deepseek/deepseek-v4-flash native /v1/responses Claude Code cache hygiene",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('chat fallback cache hygiene: 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var body = pm.response.json() || {};",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('chat fallback cache hygiene: raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored').to.be.an('object');",
+                  "});",
+                  "if (!rr || typeof rr !== 'object') { return; }",
+                  "var dump = JSON.stringify(rr);",
+                  "var msgs = rr.messages || [];",
+                  "pm.test('chat fallback cache hygiene: billing header did not egress', function () {",
+                  "  pm.expect(dump, 'outbound: ' + dump.slice(0, 500)).to.not.include('x-anthropic-billing-header:');",
+                  "  pm.expect(dump, 'outbound: ' + dump.slice(0, 500)).to.not.include('nonce-must-not-egress');",
+                  "});",
+                  "pm.test('chat fallback cache hygiene: leading system prompt survived', function () {",
+                  "  pm.expect(dump, 'outbound: ' + dump.slice(0, 500)).to.include('You are a terse assistant.');",
+                  "});",
+                  "pm.test('chat fallback cache hygiene: prompt_cache_key did not egress', function () {",
+                  "  pm.expect(rr.prompt_cache_key, 'prompt_cache_key leaked: ' + dump.slice(0, 500)).to.be.undefined;",
+                  "  pm.expect(rr.prompt_cache_retention, 'prompt_cache_retention leaked').to.be.undefined;",
+                  "  pm.expect(rr.prompt_cache_options, 'prompt_cache_options leaked').to.be.undefined;",
+                  "});",
+                  "pm.test('chat fallback cache hygiene: no mid-conversation role:system', function () {",
+                  "  var seenNonSystem = false;",
+                  "  var mid = [];",
+                  "  for (var i = 0; i < msgs.length; i++) {",
+                  "    if (msgs[i].role === 'system') {",
+                  "      if (seenNonSystem) { mid.push(i); }",
+                  "    } else { seenNonSystem = true; }",
+                  "  }",
+                  "  pm.expect(mid, 'mid-conversation system roles at ' + JSON.stringify(mid) + ': ' + dump.slice(0, 800)).to.eql([]);",
+                  "});",
+                  "pm.test('chat fallback cache hygiene: mid-conv system inlined as <system-reminder> user turn', function () {",
+                  "  var hit = null;",
+                  "  for (var i = 0; i < msgs.length; i++) {",
+                  "    if (JSON.stringify(msgs[i]).indexOf('The user just opened src/main.go.') !== -1) { hit = msgs[i]; }",
+                  "  }",
+                  "  pm.expect(hit, 'reminder absent from messages: ' + dump.slice(0, 800)).to.not.eql(null);",
+                  "  pm.expect(hit && hit.role, 'messages: ' + dump.slice(0, 800)).to.eql('user');",
+                  "  pm.expect(JSON.stringify(hit), 'envelope missing: ' + dump.slice(0, 800)).to.include('system-reminder');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"deepseek/deepseek-v4-flash\",\"max_output_tokens\":64,\"prompt_cache_key\":\"cc-session-should-not-egress\",\"prompt_cache_retention\":\"24h\",\"prompt_cache_options\":{\"mode\":\"explicit\",\"ttl\":\"30m\"},\"input\":[{\"role\":\"system\",\"content\":[{\"type\":\"input_text\",\"text\":\"x-anthropic-billing-header: cc_version=2.1.234; cch=nonce-must-not-egress\"},{\"type\":\"input_text\",\"text\":\"You are a terse assistant.\"}]},{\"role\":\"user\",\"content\":\"Hello\"},{\"role\":\"assistant\",\"content\":\"Hi.\"},{\"role\":\"system\",\"content\":\"The user just opened src/main.go.\"},{\"role\":\"user\",\"content\":\"What file am I in? Answer with the path only.\"}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "deepseek/deepseek-v4-flash /openai/v1/responses Claude Code cache hygiene",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504, 529].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('chat fallback cache hygiene: 2xx', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "if (pm.response.code >= 400) { return; }",
+                  "var body = pm.response.json() || {};",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('chat fallback cache hygiene: raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored').to.be.an('object');",
+                  "});",
+                  "if (!rr || typeof rr !== 'object') { return; }",
+                  "var dump = JSON.stringify(rr);",
+                  "var msgs = rr.messages || [];",
+                  "pm.test('chat fallback cache hygiene: billing header did not egress', function () {",
+                  "  pm.expect(dump, 'outbound: ' + dump.slice(0, 500)).to.not.include('x-anthropic-billing-header:');",
+                  "  pm.expect(dump, 'outbound: ' + dump.slice(0, 500)).to.not.include('nonce-must-not-egress');",
+                  "});",
+                  "pm.test('chat fallback cache hygiene: leading system prompt survived', function () {",
+                  "  pm.expect(dump, 'outbound: ' + dump.slice(0, 500)).to.include('You are a terse assistant.');",
+                  "});",
+                  "pm.test('chat fallback cache hygiene: prompt_cache_key did not egress', function () {",
+                  "  pm.expect(rr.prompt_cache_key, 'prompt_cache_key leaked: ' + dump.slice(0, 500)).to.be.undefined;",
+                  "  pm.expect(rr.prompt_cache_retention, 'prompt_cache_retention leaked').to.be.undefined;",
+                  "  pm.expect(rr.prompt_cache_options, 'prompt_cache_options leaked').to.be.undefined;",
+                  "});",
+                  "pm.test('chat fallback cache hygiene: no mid-conversation role:system', function () {",
+                  "  var seenNonSystem = false;",
+                  "  var mid = [];",
+                  "  for (var i = 0; i < msgs.length; i++) {",
+                  "    if (msgs[i].role === 'system') {",
+                  "      if (seenNonSystem) { mid.push(i); }",
+                  "    } else { seenNonSystem = true; }",
+                  "  }",
+                  "  pm.expect(mid, 'mid-conversation system roles at ' + JSON.stringify(mid) + ': ' + dump.slice(0, 800)).to.eql([]);",
+                  "});",
+                  "pm.test('chat fallback cache hygiene: mid-conv system inlined as <system-reminder> user turn', function () {",
+                  "  var hit = null;",
+                  "  for (var i = 0; i < msgs.length; i++) {",
+                  "    if (JSON.stringify(msgs[i]).indexOf('The user just opened src/main.go.') !== -1) { hit = msgs[i]; }",
+                  "  }",
+                  "  pm.expect(hit, 'reminder absent from messages: ' + dump.slice(0, 800)).to.not.eql(null);",
+                  "  pm.expect(hit && hit.role, 'messages: ' + dump.slice(0, 800)).to.eql('user');",
+                  "  pm.expect(JSON.stringify(hit), 'envelope missing: ' + dump.slice(0, 800)).to.include('system-reminder');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"deepseek/deepseek-v4-flash\",\"max_output_tokens\":64,\"prompt_cache_key\":\"cc-session-should-not-egress\",\"prompt_cache_retention\":\"24h\",\"prompt_cache_options\":{\"mode\":\"explicit\",\"ttl\":\"30m\"},\"input\":[{\"role\":\"system\",\"content\":[{\"type\":\"input_text\",\"text\":\"x-anthropic-billing-header: cc_version=2.1.234; cch=nonce-must-not-egress\"},{\"type\":\"input_text\",\"text\":\"You are a terse assistant.\"}]},{\"role\":\"user\",\"content\":\"Hello\"},{\"role\":\"assistant\",\"content\":\"Hi.\"},{\"role\":\"system\",\"content\":\"The user just opened src/main.go.\"},{\"role\":\"user\",\"content\":\"What file am I in? Answer with the path only.\"}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
       "name": "69. OpenRouter Claude prompt caching on Responses (#6290)",
       "description": "Regression coverage for #6290: OpenRouter Claude prompt caching was still broken on the Responses API after #4203 fixed Chat Completions.\n\nProduction path: OpenRouterProvider.Responses / ResponsesStream -> openai.HandleOpenAIResponses* -> ToOpenAIResponsesRequest -> POST {OpenRouter}/v1/responses.\n\nBefore the fix, OpenAIResponsesRequestInput.MarshalJSON deleted every message- and block-level cache_control and put nothing in its place, so Claude caching never activated on this route. Unlike Chat Completions, OpenRouter does NOT expose per-block cache_control through /v1/responses; the documented equivalent is prompt_cache_breakpoint on an input_text block, which OpenRouter converts back into an Anthropic breakpoint (https://openrouter.ai/docs/features/prompt-caching#anthropic-claude).\n\nFolder 13 covers the same feature on /v1/chat/completions and is Chat-only; these cases pin the Responses half.\n\nWhat each case pins:\n  69.1 the translation itself, asserted on the outbound body via x-bf-send-back-raw-request (deterministic, independent of whether Anthropic actually cached).\n  69.2/69.3 a real cache read on the non-streaming route. A 2xx alone does not prove caching, so [read] asserts cached_tokens > 0.\n  69.4/69.5 the same invariant through the streaming handler, which the issue calls out separately.\n  69.6 the four-breakpoint clamp. Anthropic hard-rejects a fifth cache_control block, and OpenRouter converts every breakpoint into one, so translating without clamping would turn a silent cache miss into a 400.\n\nThe [write]/[read] pairs depend on folder order and on {{cachePrefix}} (23KB, comfortably over the 1024-token minimum for claude-sonnet-4) plus the collection-level {{pcNonce}} for per-run cache isolation.",
       "item": [
