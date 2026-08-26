@@ -7,6 +7,7 @@
 1. **特性：Claude Code WebSearch → MCP。** 不支持原生 Web Search 的模型，也能透明执行 Claude Code 的 `WebSearch`。
 2. **特性：Dokploy 部署。** 用仓库里的 Compose / Dockerfile / `config.dokploy.json` 直接部署，并附带 CLIProxyAPI（Codex OAuth）sidecar。
 3. **修复：Anthropic 模型列表不再裁剪 id。** `/anthropic/v1/models` 与 OpenAI `/v1/models` 一样返回完整的 `provider/model`，避免客户端拿裁过的名字把请求打到错误的提供商。
+4. **修复：Responses→Chat 降级时保住前缀缓存。** Claude Code 打自定义 OpenAI 兼容后端时，丢掉 `prompt_cache_key*`、剥掉 billing system 块、把中途的 `role:system` 改写成 `<system-reminder>`，避免打爆 DeepSeek/GLM 的隐式前缀缓存。
 
 上游同步用 rebase，不引入 merge commit。`enhanced` 上除上述 fork commit 外，历史与上游 `dev` 一致。
 
@@ -38,6 +39,18 @@
 OpenAI `/v1/models` 返回完整 id，例如 `CommandCode/deepseek/deepseek-v4-flash`。修复前 Anthropic `/anthropic/v1/models` 会去掉第一个已知 provider 前缀，变成 `deepseek/deepseek-v4-flash`。`deepseek` 恰好是 Bifrost 内置提供商，客户端再用这个名字发请求就会打到错误的提供商。
 
 修复后两条列表接口返回同一个完整 id。Claude Code 等 Anthropic 客户端请使用列表里的完整名字；自定义 OpenAI 兼容提供商若没有 Responses，需要在提供商配置里关闭 Responses、保留 Chat Completions，Bifrost 才会把 `/anthropic/v1/messages` 降级成 Chat Completions。
+
+### Claude Code Responses→Chat 前缀缓存
+
+这也是 bug 修复：Claude Code 走自定义 OpenAI 兼容提供商（CommandCode / DeepSeek / GLM）时，Bifrost 会把 Responses 请求转成 Chat Completions。这些提供商不会过滤 OpenAI 专用字段，于是 Claude Code 的 `prompt_cache_key*`、billing header 的 system 块，以及对话中途的 `role:system` 预算提示会被原样转发，隐式前缀缓存全部 miss。
+
+`ToChatRequest` 现在会：
+
+- 丢掉 `prompt_cache_key` / `prompt_cache_retention` / `prompt_cache_options`（DeepSeek 不支持；严格兼容接口会直接 400）；
+- 剥掉以 `x-anthropic-billing-header:` 开头的 system/developer 内容，剥空则整条消息删除；
+- 保留开头的 system prompt，把后面的 `role:system` 改写成包在 `<system-reminder>` 里的 user 轮。
+
+原生 OpenAI Chat Completions 不受影响，仍然会带上 `prompt_cache_key`。`CLAUDE_CODE_ATTRIBUTION_HEADER=0` 不能替代这项修复：那个开关只去掉 billing 块，不管中途 system 和 `prompt_cache_key`。
 
 ## Dokploy 部署
 
