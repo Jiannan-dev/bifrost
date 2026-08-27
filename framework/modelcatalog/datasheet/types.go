@@ -64,6 +64,9 @@ func (p *Entry) UnmarshalJSON(data []byte) error {
 	type entryAlias Entry
 	var raw struct {
 		entryAlias
+		SupportedModalities       []string `json:"supported_modalities,omitempty"`
+		SupportedOutputModalities []string `json:"supported_output_modalities,omitempty"`
+		SupportsVision            *bool    `json:"supports_vision,omitempty"`
 		SearchContextCostPerQuery *struct {
 			Low    *float64 `json:"search_context_size_low"`
 			Medium *float64 `json:"search_context_size_medium"`
@@ -74,6 +77,29 @@ func (p *Entry) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	*p = Entry(raw.entryAlias)
+
+	inputModalities := slices.Clone(raw.SupportedModalities)
+	outputModalities := slices.Clone(raw.SupportedOutputModalities)
+	if len(inputModalities) == 0 && raw.SupportsVision != nil && (p.Mode == "chat" || p.Mode == "responses") {
+		inputModalities = []string{"text"}
+		if *raw.SupportsVision {
+			inputModalities = append(inputModalities, "image")
+		}
+	}
+	if len(outputModalities) == 0 && len(inputModalities) > 0 && (p.Mode == "chat" || p.Mode == "responses") {
+		outputModalities = []string{"text"}
+	}
+	if len(inputModalities) > 0 || len(outputModalities) > 0 {
+		if p.Architecture == nil {
+			p.Architecture = &schemas.Architecture{}
+		}
+		if len(p.Architecture.InputModalities) == 0 {
+			p.Architecture.InputModalities = inputModalities
+		}
+		if len(p.Architecture.OutputModalities) == 0 {
+			p.Architecture.OutputModalities = outputModalities
+		}
+	}
 
 	// search_context_cost_per_query arrives as a tiered object — all three values are
 	// equal for non-Perplexity providers; we prefer medium, then low, then high.
