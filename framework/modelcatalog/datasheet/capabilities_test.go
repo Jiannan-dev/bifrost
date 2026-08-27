@@ -184,6 +184,35 @@ func TestGetCapabilityEntry_PrefersLiteralMatchOverAliasFamily(t *testing.T) {
 	}
 }
 
+func TestEntryUnmarshalMapsDatasheetModalitiesToArchitecture(t *testing.T) {
+	var entry Entry
+	if err := entry.UnmarshalJSON([]byte(`{
+		"provider":"openai",
+		"mode":"chat",
+		"supported_modalities":["text","image"],
+		"supported_output_modalities":["text"]
+	}`)); err != nil {
+		t.Fatalf("UnmarshalJSON() error = %v", err)
+	}
+	if entry.Architecture == nil ||
+		!slices.Equal(entry.Architecture.InputModalities, []string{"text", "image"}) ||
+		!slices.Equal(entry.Architecture.OutputModalities, []string{"text"}) {
+		t.Fatalf("architecture = %#v", entry.Architecture)
+	}
+}
+
+func TestEntryUnmarshalMapsSupportsVisionToArchitecture(t *testing.T) {
+	var entry Entry
+	if err := entry.UnmarshalJSON([]byte(`{"provider":"zai","mode":"chat","supports_vision":true}`)); err != nil {
+		t.Fatalf("UnmarshalJSON() error = %v", err)
+	}
+	if entry.Architecture == nil ||
+		!slices.Equal(entry.Architecture.InputModalities, []string{"text", "image"}) ||
+		!slices.Equal(entry.Architecture.OutputModalities, []string{"text"}) {
+		t.Fatalf("architecture = %#v", entry.Architecture)
+	}
+}
+
 func TestCapabilityFieldsRoundTripThroughPricingConversions(t *testing.T) {
 	modality := "text"
 	inputCost := float64(1)
