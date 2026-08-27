@@ -46,6 +46,51 @@ func TestPricingLookupsNormalizeRuntimeProvider(t *testing.T) {
 	}
 }
 
+func TestGetPricingEntryForModelUsesSharedOfficialFallback(t *testing.T) {
+	store := NewTestStore(nil)
+	store.pricingData[makeKey("deepseek-v4-flash", "deepseek", "chat")] = configstoreTables.TableModelPricing{
+		Model: "deepseek-v4-flash", Provider: "deepseek", Mode: "chat", MaxInputTokens: capabilityIntPtr(1_000_000),
+	}
+	store.pricingData[makeKey("glm-5.3-flash", "zai", "chat")] = configstoreTables.TableModelPricing{
+		Model: "glm-5.3-flash", Provider: "zai", Mode: "chat", MaxInputTokens: capabilityIntPtr(1_048_576),
+	}
+	store.pricingData[makeKey("gpt-5.6-sol", "openai", "chat")] = configstoreTables.TableModelPricing{
+		Model: "gpt-5.6-sol", Provider: "openai", Mode: "chat", MaxInputTokens: capabilityIntPtr(1_050_000),
+	}
+
+	for _, tc := range []struct {
+		provider schemas.ModelProvider
+		model    string
+		want     int
+	}{
+		{"CommandCode", "deepseek/deepseek-v4-flash", 1_000_000},
+		{"CommandCode", "z-ai/glm-5.3-flash", 1_048_576},
+		{"OpenAI", "gpt-5.6-sol", 1_050_000},
+	} {
+		entry := store.GetPricingEntryForModel(tc.model, tc.provider)
+		if entry == nil || entry.MaxInputTokens == nil || *entry.MaxInputTokens != tc.want {
+			t.Fatalf("lookup %s/%s = %#v, want max_input_tokens %d", tc.provider, tc.model, entry, tc.want)
+		}
+	}
+}
+
+func TestGetPricingEntryForModelKeepsOriginalMatch(t *testing.T) {
+	store := NewTestStore(nil)
+	store.pricingData[makeKey("deepseek-v4-flash", "opencode-go", "chat")] = configstoreTables.TableModelPricing{
+		Model: "deepseek-v4-flash", Provider: "opencode-go", Mode: "chat", InputCostPerToken: capabilityFloatPtr(4),
+	}
+	store.pricingData[makeKey("deepseek-v4-flash", "deepseek", "chat")] = configstoreTables.TableModelPricing{
+		Model: "deepseek-v4-flash", Provider: "deepseek", Mode: "chat", InputCostPerToken: capabilityFloatPtr(2),
+	}
+
+	entry := store.GetPricingEntryForModel("deepseek-v4-flash", schemas.OpencodeGo)
+	if entry == nil || entry.InputCostPerToken == nil || *entry.InputCostPerToken != 4 {
+		t.Fatalf("original provider match must win, got %#v", entry)
+	}
+}
+
+func capabilityFloatPtr(v float64) *float64 { return &v }
+
 func TestDeprecatedDatasheetModelsForProviderUsesRebuiltIndex(t *testing.T) {
 	s := NewTestStore(nil)
 	s.mu.Lock()
