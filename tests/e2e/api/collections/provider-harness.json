@@ -145457,6 +145457,58 @@
           }
         }
       ]
+    },
+    {
+      "name": "70. Provider-independent official pricing fallback (fork)",
+      "description": "Pins the fork pricing fallback on a real HTTP response. A built-in provider name that differs only by case must still use the synced Bifrost datasheet price after the exact provider lookup misses. The assertion is on usage.cost, proving the wire-visible logging post-hook attached a non-zero catalog breakdown; rates remain datasheet-owned and are not hard-coded in this case.",
+      "item": [
+        {
+          "name": "OpenAI/gpt-4o-mini official pricing fallback - fork",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"OpenAI/gpt-4o-mini\",\n  \"messages\": [\n    { \"role\": \"user\", \"content\": \"Reply with OK only.\" }\n  ],\n  \"max_tokens\": 8\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "pm.test('case-normalized OpenAI request succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(400);",
+                  "});",
+                  "pm.test('synced official pricing produces a non-zero usage cost', function () {",
+                  "  var u = pm.response.json().usage || {};",
+                  "  pm.expect(u.cost, 'usage.cost missing: ' + pm.response.text()).to.exist;",
+                  "  pm.expect(Number(u.cost.total_cost), 'usage.cost.total_cost is not positive: ' + JSON.stringify(u.cost)).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }

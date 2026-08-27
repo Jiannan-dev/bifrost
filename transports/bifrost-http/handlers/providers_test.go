@@ -644,6 +644,44 @@ func TestEnrichListModelsResponse_MarksDeprecatedPricingRows(t *testing.T) {
 	}
 }
 
+func TestEnrichListModelsResponseFallsBackToOfficialPublisherMetadata(t *testing.T) {
+	const customProvider schemas.ModelProvider = "CommandCode"
+	schemas.RegisterKnownProvider(customProvider)
+	t.Cleanup(func() { schemas.UnregisterKnownProvider(customProvider) })
+
+	catalog := modelCatalogForPricingJSON(t, []byte(`{
+		"deepseek/deepseek-v4-flash": {
+			"provider":"deepseek",
+			"mode":"chat",
+			"base_model":"deepseek-v4-flash",
+			"max_input_tokens":1000000,
+			"max_output_tokens":393216,
+			"supports_vision":false,
+			"input_cost_per_token":0.00000044,
+			"output_cost_per_token":0.00000132
+		}
+	}`))
+	resp := &schemas.BifrostListModelsResponse{Data: []schemas.Model{
+		{ID: "CommandCode/deepseek/deepseek-v4-flash"},
+	}}
+
+	enrichListModelsResponse(resp, catalog)
+
+	model := resp.Data[0]
+	if model.ContextLength == nil || *model.ContextLength != 1_000_000 {
+		t.Fatalf("context_length = %#v, want 1000000", model.ContextLength)
+	}
+	if model.MaxOutputTokens == nil || *model.MaxOutputTokens != 393_216 {
+		t.Fatalf("max_output_tokens = %#v, want 393216", model.MaxOutputTokens)
+	}
+	if model.Architecture == nil || !slices.Equal(model.Architecture.InputModalities, []string{"text"}) {
+		t.Fatalf("architecture = %#v, want text input modality", model.Architecture)
+	}
+	if model.Pricing == nil || model.Pricing.Prompt == nil {
+		t.Fatalf("pricing was not enriched: %#v", model.Pricing)
+	}
+}
+
 func TestListModels_UnfilteredIgnoresKeys(t *testing.T) {
 	SetLogger(&mockLogger{})
 

@@ -2067,7 +2067,6 @@ func populateOutputImageCount(imageUsage *schemas.ImageUsage, dataLen int) {
 // applies.
 func (s *Store) resolvePricing(routingInfo schemas.RoutingInfo, requestType schemas.RequestType, scopes LookupScopes) *configstoreTables.TableModelPricing {
 	provider := string(routingInfo.Provider)
-	catalogProvider := normalizeProvider(provider)
 	var aliasModelID, aliasModelName string
 	if rka := routingInfo.ResolvedKeyAlias; rka != nil {
 		aliasModelID = rka.ModelID
@@ -2092,16 +2091,13 @@ func (s *Store) resolvePricing(routingInfo schemas.RoutingInfo, requestType sche
 		scopes.Provider = provider
 	}
 
-	for _, candidate := range []string{serverSideFallbackModel, aliasModelName, aliasModelID, routingInfo.Model} {
-		if candidate == "" {
-			continue
-		}
-		base, exists := s.getBasePricing(candidate, catalogProvider, requestType)
+	candidates := []string{serverSideFallbackModel, aliasModelName, aliasModelID, routingInfo.Model}
+	for _, lookup := range s.catalogLookupCandidates(candidates, provider) {
+		base, exists := s.getBasePricing(lookup.model, lookup.provider, requestType)
 		if exists && base != nil {
 			result, _ := s.applyPricingOverrides(overrideKey, requestType, *base, scopes)
 			return &result
 		}
-		s.logger.Debug("pricing not found for %s, trying next candidate", candidate)
 	}
 
 	// No base catalog entry found; still try overrides in case the user defined

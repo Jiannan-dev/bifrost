@@ -172,12 +172,20 @@ func (s *Store) Get(model string, provider schemas.ModelProvider, requestType sc
 }
 
 // GetPricingEntryForModel returns the first pricing entry found across known
-// modes. Preserved for callers (inference handler) that want any pricing row
-// for the model without specifying a request type.
+// modes. The upstream provider/model lookup stays first; shared catalog
+// candidates supply the official-publisher fallback only after a miss.
 func (s *Store) GetPricingEntryForModel(model string, provider schemas.ModelProvider) *Entry {
+	for _, candidate := range s.catalogLookupCandidates([]string{model}, string(provider)) {
+		if entry := s.pricingEntryForModel(candidate.model, candidate.provider); entry != nil {
+			return entry
+		}
+	}
+	return nil
+}
+
+func (s *Store) pricingEntryForModel(model, provider string) *Entry {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	catalogProvider := normalizeProvider(string(provider))
 	for _, mode := range []schemas.RequestType{
 		schemas.TextCompletionRequest,
 		schemas.ChatCompletionRequest,
@@ -192,8 +200,7 @@ func (s *Store) GetPricingEntryForModel(model string, provider schemas.ModelProv
 		schemas.VideoGenerationRequest,
 		schemas.OCRRequest,
 	} {
-		key := makeKey(model, catalogProvider, normalizeRequestType(mode))
-		if pricing, ok := s.pricingData[key]; ok {
+		if pricing, ok := s.pricingData[makeKey(model, provider, normalizeRequestType(mode))]; ok {
 			return convertTablePricingToEntry(&pricing)
 		}
 	}
