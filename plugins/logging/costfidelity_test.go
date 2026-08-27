@@ -137,6 +137,50 @@ func TestCalculateCostForLogMatchesLiveForCachedRequest(t *testing.T) {
 	}
 }
 
+func TestCalculateCostForLogUsesOfficialPricingFallbackWithCacheTokens(t *testing.T) {
+	plugin := newCostFidelityPlugin(t)
+	usage := &schemas.BifrostLLMUsage{
+		PromptTokens:     10_000,
+		CompletionTokens: 500,
+		TotalTokens:      10_500,
+		PromptTokensDetails: &schemas.ChatPromptTokensDetails{
+			CachedReadTokens: 8_000,
+		},
+	}
+
+	want := liveCost(t, plugin, &schemas.BifrostResponse{
+		ChatResponse: &schemas.BifrostChatResponse{
+			Usage: usage,
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType: schemas.ChatCompletionRequest,
+				RoutingInfo: schemas.RoutingInfo{
+					Provider: schemas.OpenAI,
+					Model:    "gpt-4o",
+				},
+			},
+		},
+	}, string(schemas.OpenAI))
+	require.Positive(t, want)
+
+	entry := &logstore.Log{
+		ID:               "req-official-fallback-cache",
+		Timestamp:        time.Now().UTC(),
+		Object:           string(schemas.ChatCompletionRequest),
+		Provider:         "OpenAI",
+		Model:            "gpt-4o",
+		Status:           "success",
+		PromptTokens:     usage.PromptTokens,
+		CompletionTokens: usage.CompletionTokens,
+		TotalTokens:      usage.TotalTokens,
+		CachedReadTokens: usage.PromptTokensDetails.CachedReadTokens,
+		TokenUsageParsed: usage,
+	}
+
+	got, err := plugin.calculateCostForLog(entry)
+	require.NoError(t, err)
+	assertCostsEqual(t, "official fallback cached log", got, want)
+}
+
 // TestCalculateCostForLogRefusesDegradedUsage covers the hybrid-store case that
 // produced the production overbill: token_usage is offloaded to object storage, so
 // DeserializeFields rebuilds a stub from the denormalized columns. Pricing that stub
