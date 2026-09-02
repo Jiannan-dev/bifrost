@@ -27,3 +27,10 @@ streaming:
 quota-exceeded:
   switch-project: true
   switch-preview-model: true
+
+# Keep request-level round-robin as the default selector, but pin a
+# conversation to one Codex credential so prefix cache can hit.
+routing:
+  strategy: "round-robin"
+  session-affinity: true
+  session-affinity-ttl: "1h"
