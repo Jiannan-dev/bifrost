@@ -28,9 +28,12 @@ quota-exceeded:
   switch-project: true
   switch-preview-model: true
 
-# Keep request-level round-robin as the default selector, but pin a
-# conversation to one Codex credential so prefix cache can hit.
+# Drain the higher-priority Codex OAuth account (priority is set on that
+# account's auth JSON, not here) until it hits quota, then fail over.
+# Session affinity keeps a conversation on one credential so prefix cache
+# can hit; the bound account is kept even if a higher-priority one recovers.
+# Failover still runs if the bound credential becomes unavailable.
 routing:
-  strategy: "round-robin"
+  strategy: "fill-first"
   session-affinity: true
   session-affinity-ttl: "1h"
