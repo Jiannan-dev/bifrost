@@ -2780,3 +2780,100 @@ func TestReasoningContentBlocksGateReadsDatasheet(t *testing.T) {
 		require.Nil(t, out[0].Content, "summaries must stay as summaries")
 	})
 }
+
+// TestToOpenAIResponsesRequest_DropsReasoningItemIDsForOpenCode pins the
+// store:false OpenCode Go/Zen egress: a reasoning item id is a server-side
+// handle those hosts cannot look up. OpenAI must still receive recovered ids
+// so encrypted_content continues to match. The caller's input is left intact.
+func TestToOpenAIResponsesRequest_DropsReasoningItemIDsForOpenCode(t *testing.T) {
+	thinking := schemas.ResponsesMessage{
+		ID:   schemas.Ptr("rs_placeholder"),
+		Type: schemas.Ptr(schemas.ResponsesMessageTypeReasoning),
+		Content: &schemas.ResponsesMessageContent{
+			ContentBlocks: []schemas.ResponsesMessageContentBlock{
+				{Type: schemas.ResponsesOutputMessageContentTypeReasoning, Text: schemas.Ptr("planning")},
+			},
+		},
+	}
+	encrypted := schemas.ResponsesMessage{
+		ID:   schemas.Ptr("rs_openai_issued"),
+		Type: schemas.Ptr(schemas.ResponsesMessageTypeReasoning),
+		ResponsesReasoning: &schemas.ResponsesReasoning{
+			Summary:          []schemas.ResponsesReasoningSummary{{Type: schemas.ResponsesReasoningContentBlockTypeSummaryText, Text: "planning"}},
+			EncryptedContent: schemas.Ptr("ciphertext"),
+		},
+	}
+	user := schemas.ResponsesMessage{
+		ID:   schemas.Ptr("msg_user_1"),
+		Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+		Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+		Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hi")},
+	}
+
+	t.Run("opencode-go drops reasoning ids and keeps message ids", func(t *testing.T) {
+		req := &schemas.BifrostResponsesRequest{
+			Provider: schemas.OpencodeGo,
+			Model:    "gpt-oss-120b",
+			Input:    []schemas.ResponsesMessage{user, thinking, encrypted},
+		}
+		out := ToOpenAIResponsesRequest(nil, req)
+		if out == nil {
+			t.Fatal("ToOpenAIResponsesRequest returned nil")
+		}
+		foundReasoning := 0
+		for _, msg := range out.Input.OpenAIResponsesRequestInputArray {
+			if msg.Type != nil && *msg.Type == schemas.ResponsesMessageTypeMessage {
+				if msg.ID == nil || *msg.ID != "msg_user_1" {
+					t.Errorf("expected user message id to survive, got %+v", msg.ID)
+				}
+				continue
+			}
+			if !msg.IsReasoningItem() {
+				continue
+			}
+			foundReasoning++
+			if msg.ID != nil {
+				t.Errorf("expected OpenCode reasoning item id to be dropped, got %q", *msg.ID)
+			}
+			if msg.ResponsesReasoning != nil && msg.ResponsesReasoning.EncryptedContent != nil &&
+				*msg.ResponsesReasoning.EncryptedContent != "ciphertext" {
+				t.Errorf("expected encrypted_content to survive, got %q", *msg.ResponsesReasoning.EncryptedContent)
+			}
+		}
+		if foundReasoning == 0 {
+			t.Fatal("expected at least one reasoning item to reach OpenCode")
+		}
+		if thinking.ID == nil || *thinking.ID != "rs_placeholder" {
+			t.Error("expected the caller's thinking item id to be left intact")
+		}
+		if encrypted.ID == nil || *encrypted.ID != "rs_openai_issued" {
+			t.Error("expected the caller's encrypted reasoning item id to be left intact")
+		}
+	})
+
+	t.Run("openai keeps recovered reasoning ids", func(t *testing.T) {
+		req := &schemas.BifrostResponsesRequest{
+			Provider: schemas.OpenAI,
+			Model:    "gpt-5.6-sol",
+			Input:    []schemas.ResponsesMessage{user, encrypted},
+		}
+		out := ToOpenAIResponsesRequest(nil, req)
+		if out == nil {
+			t.Fatal("ToOpenAIResponsesRequest returned nil")
+		}
+		var found *schemas.ResponsesMessage
+		for i := range out.Input.OpenAIResponsesRequestInputArray {
+			m := &out.Input.OpenAIResponsesRequestInputArray[i]
+			if m.IsReasoningItem() {
+				found = m
+				break
+			}
+		}
+		if found == nil {
+			t.Fatal("expected the reasoning item to reach OpenAI")
+		}
+		if found.ID == nil || *found.ID != "rs_openai_issued" {
+			t.Errorf("expected OpenAI to keep the recovered id, got %+v", found.ID)
+		}
+	})
+}

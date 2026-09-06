@@ -6195,10 +6195,10 @@ func executeRequestWithRetries[T any](
 	// Index in BifrostContextKeyAttemptTrail of an attempt that hit a rate limit and is waiting
 	// to learn whether the *next* key selection actually picks a different key. -1 = no pending.
 	pendingRotationAttemptIdx := -1
-	// Attempts granted outside the configured retry budget. Only the encrypted-reasoning
-	// fail-soft below adds one: MaxRetries defaults to 0, and a request that would
-	// otherwise die on a rejected replay deserves its one stripped attempt regardless of
-	// how the retry budget is tuned.
+	// Attempts granted outside the configured retry budget. The encrypted-reasoning
+	// fail-soft and the reasoning-item-id fail-soft each add one: MaxRetries defaults
+	// to 0, and a request that would otherwise die on a rejected replay deserves its
+	// one rewritten attempt regardless of how the retry budget is tuned.
 	extraAttempts := 0
 	// True once encrypted_content has been stripped from the request, so the fail-soft
 	// fires at most once per request and an upstream that keeps rejecting cannot loop.
@@ -6206,6 +6206,13 @@ func executeRequestWithRetries[T any](
 	// True iff the previous attempt failed on rejected encrypted reasoning and we stripped
 	// it. Used to skip backoff: the payload changed, so there is nothing to wait out.
 	lastWasEncryptedContentStrip := false
+	// True once reasoning item ids have been stripped, so that fail-soft also fires
+	// at most once per request.
+	strippedReasoningItemIDs := false
+	// True iff the previous attempt failed on a missing/expired reasoning item id
+	// and we stripped those ids. Used to skip backoff the same way as the
+	// encrypted-content strip: the payload changed, so there is nothing to wait out.
+	lastWasReasoningItemIDStrip := false
 
 	for attempts = 0; attempts <= config.NetworkConfig.MaxRetries+extraAttempts; attempts++ {
 		ctx.SetValue(schemas.BifrostContextKeyNumberOfRetries, attempts)
@@ -6371,7 +6378,7 @@ func executeRequestWithRetries[T any](
 			}
 			ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelInfo, fmt.Sprintf("Retry %d/%d for %s/%s (previous attempt failed: %s%s)", attempts, config.NetworkConfig.MaxRetries+extraAttempts, providerKey, model, routingErrorSummary(bifrostError), keyNote))
 
-			if !((lastWasPermanentKeyFailure && keyChanged) || lastWasEncryptedContentStrip) {
+			if !((lastWasPermanentKeyFailure && keyChanged) || lastWasEncryptedContentStrip || lastWasReasoningItemIDStrip) {
 				backoff := calculateBackoff(attempts-1, config)
 				logger.Debug("sleeping for %s before retry", backoff)
 				time.Sleep(backoff)
@@ -6630,6 +6637,24 @@ func executeRequestWithRetries[T any](
 			}
 			trail[len(trail)-1].FailReason = &reason
 			ctx.SetValue(schemas.BifrostContextKeyAttemptTrail, trail)
+		}
+
+		// Fail soft when the upstream refuses a replayed reasoning item id. store:false
+		// OpenAI-compatible hosts (OpenCode Go) treat input[].id as a server-side handle.
+		// A minted placeholder cannot be looked up, and retrying the same id cannot help,
+		// so drop reasoning ids only -- keep summaries, thinking text, and
+		// encrypted_content -- and give the request one more attempt on the same key.
+		// Runs once per request. Checked before the encrypted-content strip because the
+		// two rewrites are opposites (this one keeps ciphertext and drops ids).
+		lastWasReasoningItemIDStrip = false
+		if !shouldRetry && !strippedReasoningItemIDs && isReasoningItemIDRejection(bifrostError) &&
+			stripResponsesReasoningItemIDs(ctx, req) {
+			strippedReasoningItemIDs = true
+			lastWasReasoningItemIDStrip = true
+			extraAttempts++
+			shouldRetry = true
+			logger.Warn("upstream rejected a replayed reasoning item id for %s/%s; retrying once without reasoning item ids: %s", providerKey, model, errMessage)
+			ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelWarn, fmt.Sprintf("Stripped unreplayable reasoning item ids from the request to %s/%s and retrying once", providerKey, model))
 		}
 
 		// Fail soft when the upstream refuses replayed encrypted reasoning. The ciphertext

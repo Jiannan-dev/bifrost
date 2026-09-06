@@ -8,6 +8,7 @@
 2. **特性：Dokploy 部署。** 用仓库里的 Compose / Dockerfile / `config.dokploy.json` 直接部署，并附带 CLIProxyAPI（Codex OAuth）sidecar。
 3. **修复：Anthropic 模型列表不再裁剪 id。** `/anthropic/v1/models` 与 OpenAI `/v1/models` 一样返回完整的 `provider/model`，避免客户端拿裁过的名字把请求打到错误的提供商。
 4. **修复：Responses→Chat 降级时保住前缀缓存。** Claude Code 打自定义 OpenAI 兼容后端时，丢掉 `prompt_cache_key*`、剥掉 billing system 块、把中途的 `role:system` 改写成 `<system-reminder>`，避免打爆 DeepSeek/GLM 的隐式前缀缓存。
+5. **修复：Anthropic thinking 回放不再伪造 reasoning item id。** Claude Code 回放未标记的 `thinking` / `redacted_thinking` 时不再铸造 `rs_*`；OpenCode Go（`store:false`）把这种 id 当成服务端句柄会 400。只恢复嵌入的真实 id；这条 400 会剥掉 reasoning id 再重试一次。不改 `prompt_cache_key*`，也不绕过 Semantic Cache。
 
 上游同步用 rebase，不引入 merge commit。`enhanced` 上除上述 fork commit 外，历史与上游 `dev` 一致。
 
@@ -51,6 +52,18 @@ OpenAI `/v1/models` 返回完整 id，例如 `CommandCode/deepseek/deepseek-v4-f
 - 保留开头的 system prompt，把后面的 `role:system` 改写成包在 `<system-reminder>` 里的 user 轮。
 
 原生 OpenAI Chat Completions 不受影响，仍然会带上 `prompt_cache_key`。`CLAUDE_CODE_ATTRIBUTION_HEADER=0` 不能替代这项修复：那个开关只去掉 billing 块，不管中途 system 和 `prompt_cache_key`。
+
+### Anthropic thinking 回放伪造 reasoning item id
+
+这也是 bug 修复：Claude Code 走 `/anthropic/v1/messages` 打官方 OpenCode Go 时，Bifrost 会把未标记的 `thinking` / `redacted_thinking` 转成 Responses reasoning item，并曾经补一个随机 `rs_*` id。OpenCode Go 的 `/v1/responses` 使用 `store: false`，会把这个 id 当成服务端句柄去查，第二轮立刻 400：`Referenced reasoning item ... was not found or has expired`。随机 id 每轮还不一样，隐式前缀缓存也会被打爆。
+
+现在会：
+
+- 只有 `ExtractReasoningItemID` 找回嵌入的真实 OpenAI id 时才带 `id`；否则省略；
+- 遇到上述 400 时，只剥掉 reasoning 类型 item 的 id（包括没有 `ResponsesReasoning` 的 thinking-only item），保留摘要、thinking 文本和 `encrypted_content`，再重试一次，不走退避、不占用普通 `MaxRetries`；
+- 官方 OpenCode Go / Zen 出站时再剥一层 reasoning id。原生 OpenAI 仍会带上找回的嵌入 id，好让 `encrypted_content` 对得上。
+
+不启用 OpenCode 的 id 嵌入（它自己发的 id 同样不能回放）。不设置 Semantic Cache 绕过。不改 `prompt_cache_key*`。
 
 ## Dokploy 部署
 

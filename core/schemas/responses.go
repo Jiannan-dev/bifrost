@@ -1517,6 +1517,19 @@ type ResponsesMessage struct {
 	rawPreserved []byte
 }
 
+// IsReasoningItem reports whether m is a Responses reasoning item.
+//
+// Anthropic thinking-only conversion sets Type=reasoning and may leave
+// ResponsesReasoning unset. Encrypted-content items set ResponsesReasoning
+// even when Type is omitted. Either form is a reasoning item: a check that
+// only looks at ResponsesReasoning misses Claude Code thinking blocks.
+func (m ResponsesMessage) IsReasoningItem() bool {
+	if m.Type != nil && *m.Type == ResponsesMessageTypeReasoning {
+		return true
+	}
+	return m.ResponsesReasoning != nil
+}
+
 // isRawPreservedItem reports whether t is an item type that Bifrost preserves
 // verbatim rather than modelling field-by-field (see rawPreserved).
 func isRawPreservedItem(t string) bool {

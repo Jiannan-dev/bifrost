@@ -494,6 +494,18 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 			responsesHasPromptCacheBreakpoint(messages)
 	}
 
+	// OpenCode Go/Zen run /v1/responses with store:false, so a reasoning item id is
+	// a server-side handle they cannot look up. Drop ids on the copy we are about
+	// to send; recovered OpenAI ids still reach OpenAI (this gate is OpenCode only).
+	// message is already a value copy, so nil-ing ID does not mutate bifrostReq.Input.
+	if dropsResponsesReasoningItemIDs(bifrostReq.Provider) {
+		for i := range messages {
+			if messages[i].IsReasoningItem() {
+				messages[i].ID = nil
+			}
+		}
+	}
+
 	// Updating params
 	params := bifrostReq.Params
 	// Create the responses request with properly mapped parameters
@@ -644,6 +656,10 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 	}
 
 	return req
+}
+
+func dropsResponsesReasoningItemIDs(provider schemas.ModelProvider) bool {
+	return provider == schemas.OpencodeGo || provider == schemas.OpencodeZen
 }
 
 // topPUnsupported reports whether the model rejects top_p. The datasheet can mark

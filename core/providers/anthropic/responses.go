@@ -5919,6 +5919,21 @@ func anthropicToolUseBlockToResponsesMessage(toolBlock *AnthropicContentBlock, i
 	return bifrostMsg
 }
 
+// recoveredReasoningItemID returns an OpenAI-issued reasoning item id smuggled
+// through an Anthropic thinking signature or redacted_thinking payload, or
+// (nil, payload) when the payload is unmarked.
+//
+// A missing id must stay nil. Minting a placeholder `rs_*` makes store:false
+// OpenAI-compatible Responses upstreams (OpenCode Go in particular) treat the
+// id as a server-side handle and 400:
+// "Referenced reasoning item 'rs_...' was not found or has expired".
+func recoveredReasoningItemID(payload string) (id *string, rest string) {
+	if extracted, remainder, ok := providerUtils.ExtractReasoningItemID(payload); ok {
+		return extracted, remainder
+	}
+	return nil, payload
+}
+
 // Helper function to convert Anthropic content blocks to Bifrost ResponsesMessages, grouping text and tool_use blocks
 func convertAnthropicContentBlocksToResponsesMessagesGrouped(contentBlocks []AnthropicContentBlock, role *schemas.ResponsesMessageRoleType, isOutputMessage bool) []schemas.ResponsesMessage {
 	var bifrostMessages []schemas.ResponsesMessage
@@ -6068,11 +6083,11 @@ func convertAnthropicContentBlocksToResponsesMessagesGrouped(contentBlocks []Ant
 
 		case AnthropicContentBlockTypeThinking:
 			if block.Thinking != nil {
-				id := new("rs_" + schemas.GetRandomString(50))
+				var id *string
 				var recoveredID *string
 				signature := block.Signature
 				if signature != nil {
-					if extractedID, rest, ok := providerUtils.ExtractReasoningItemID(*signature); ok {
+					if extractedID, rest := recoveredReasoningItemID(*signature); extractedID != nil {
 						id = extractedID
 						recoveredID = extractedID
 						signature = &rest
@@ -6101,13 +6116,10 @@ func convertAnthropicContentBlocksToResponsesMessagesGrouped(contentBlocks []Ant
 		case AnthropicContentBlockTypeRedactedThinking:
 			// Handle redacted thinking (encrypted content)
 			if block.Data != nil {
-				encryptedContent := *block.Data
-				id := new("rs_" + schemas.GetRandomString(50))
 				var recoveredID *string
-				if extractedID, rest, ok := providerUtils.ExtractReasoningItemID(*block.Data); ok {
-					id = extractedID
-					recoveredID = extractedID
-					encryptedContent = rest
+				id, encryptedContent := recoveredReasoningItemID(*block.Data)
+				if id != nil {
+					recoveredID = id
 				}
 				if recoveredID != nil {
 					if idx, found := reasoningIndexByID[*recoveredID]; found {
@@ -6459,9 +6471,6 @@ func convertAnthropicContentBlocksToResponsesMessages(ctx *schemas.BifrostContex
 					continue
 				}
 				id := extractedID
-				if id == nil {
-					id = new("rs_" + schemas.GetRandomString(50))
-				}
 				bifrostMsg := schemas.ResponsesMessage{
 					ID:   id,
 					Type: new(schemas.ResponsesMessageTypeReasoning),
@@ -6841,9 +6850,6 @@ func convertAnthropicContentBlocksToResponsesMessages(ctx *schemas.BifrostContex
 	// This ensures reasoning comes before any text/tool blocks (Bedrock compatibility)
 	if len(reasoningContentBlocks) > 0 {
 		id := reasoningItemID
-		if id == nil {
-			id = new("rs_" + schemas.GetRandomString(50))
-		}
 		reasoningMessage := schemas.ResponsesMessage{
 			ID:   id,
 			Type: new(schemas.ResponsesMessageTypeReasoning),
