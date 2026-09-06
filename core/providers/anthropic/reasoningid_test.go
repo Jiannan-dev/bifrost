@@ -98,12 +98,14 @@ func TestConvertAnthropicContentBlocks_ThinkingRecoversEmbeddedID(t *testing.T) 
 	}
 }
 
-// TestConvertAnthropicContentBlocks_GenuineSignatureFallsBackToRandomID is the
-// safety-net case: a plain, unmarked signature/data value -- exactly what a
-// genuine Anthropic-native thinking/redacted_thinking block looks like -- must
-// keep falling back to a fresh random id, and must never have its bytes altered.
-// This must pass both before and after the fix.
-func TestConvertAnthropicContentBlocks_GenuineSignatureFallsBackToRandomID(t *testing.T) {
+// TestConvertAnthropicContentBlocks_GenuineSignatureOmitsItemID is the OpenCode
+// Go crash site: a plain, unmarked signature/data value -- exactly what a
+// genuine Anthropic-native thinking/redacted_thinking block looks like -- has
+// no OpenAI-issued item id to recover. The id must stay nil. Minting a
+// placeholder `rs_*` makes store:false Responses upstreams look the id up as a
+// server-side handle and 400 "Referenced reasoning item ... was not found or
+// has expired". Payload bytes must stay unaltered either way.
+func TestConvertAnthropicContentBlocks_GenuineSignatureOmitsItemID(t *testing.T) {
 	const genuineData = "EqoBCkYIARgCKkCVn3G8_a_real_anthropic_redacted_thinking_payload"
 	blocks := []AnthropicContentBlock{
 		{Type: AnthropicContentBlockTypeRedactedThinking, Data: schemas.Ptr(genuineData)},
@@ -114,16 +116,108 @@ func TestConvertAnthropicContentBlocks_GenuineSignatureFallsBackToRandomID(t *te
 	out := convertAnthropicContentBlocksToResponsesMessages(ctx, blocks, &roleVal, false, "")
 	msg := findReasoningMessage(t, out)
 
-	if msg.ID == nil || !hasPrefix(*msg.ID, "rs_") {
-		t.Errorf("fallback id = %v, want a fresh rs_-prefixed random id", msg.ID)
+	if msg.ID != nil {
+		t.Errorf("unmarked redacted_thinking id = %q, want nil (do not mint a placeholder rs_*)", *msg.ID)
 	}
 	if msg.ResponsesReasoning == nil || msg.ResponsesReasoning.EncryptedContent == nil || *msg.ResponsesReasoning.EncryptedContent != genuineData {
 		t.Errorf("genuine data must pass through byte-for-byte unchanged, got %v", msg.ResponsesReasoning)
 	}
 }
 
-func hasPrefix(s, prefix string) bool {
-	return len(s) >= len(prefix) && s[:len(prefix)] == prefix
+// TestConvertAnthropicContentBlocksGrouped_GenuineSignatureOmitsItemID is the
+// Bedrock-grouped twin: same unmarked payload, same nil-id expectation.
+func TestConvertAnthropicContentBlocksGrouped_GenuineSignatureOmitsItemID(t *testing.T) {
+	const genuineData = "EqoBCkYIARgCKkCVn3G8_grouped_anthropic_redacted_thinking_payload"
+	blocks := []AnthropicContentBlock{
+		{Type: AnthropicContentBlockTypeRedactedThinking, Data: schemas.Ptr(genuineData)},
+	}
+	roleVal := schemas.ResponsesMessageRoleType(AnthropicMessageRoleAssistant)
+
+	out := convertAnthropicContentBlocksToResponsesMessagesGrouped(blocks, &roleVal, false)
+	msg := findReasoningMessage(t, out)
+
+	if msg.ID != nil {
+		t.Errorf("unmarked grouped redacted_thinking id = %q, want nil", *msg.ID)
+	}
+	if msg.ResponsesReasoning == nil || msg.ResponsesReasoning.EncryptedContent == nil || *msg.ResponsesReasoning.EncryptedContent != genuineData {
+		t.Errorf("genuine data must pass through byte-for-byte unchanged, got %v", msg.ResponsesReasoning)
+	}
+}
+
+// TestConvertAnthropicContentBlocks_GenuineThinkingOmitsItemID covers the
+// Claude Code tool-call turn: a visible thinking block with an Anthropic
+// signature and no embedded OpenAI id. This is the AlphaDesk OpenCode Go
+// failure (thinking then Bash): the ungrouped converter used to mint rs_*.
+func TestConvertAnthropicContentBlocks_GenuineThinkingOmitsItemID(t *testing.T) {
+	const genuineSig = "EqoBCkYIARgCKkCVn3G8_a_real_anthropic_thinking_signature"
+	text := "I will run the tests."
+	blocks := []AnthropicContentBlock{
+		{Type: AnthropicContentBlockTypeThinking, Thinking: &text, Signature: schemas.Ptr(genuineSig)},
+	}
+	roleVal := schemas.ResponsesMessageRoleType(AnthropicMessageRoleAssistant)
+	ctx := schemas.NewBifrostContext(nil, time.Time{})
+
+	out := convertAnthropicContentBlocksToResponsesMessages(ctx, blocks, &roleVal, false, "")
+	msg := findReasoningMessage(t, out)
+
+	if msg.ID != nil {
+		t.Errorf("unmarked thinking id = %q, want nil (do not mint a placeholder rs_*)", *msg.ID)
+	}
+	if msg.Content == nil || len(msg.Content.ContentBlocks) != 1 || msg.Content.ContentBlocks[0].Signature == nil || *msg.Content.ContentBlocks[0].Signature != genuineSig {
+		t.Errorf("genuine thinking signature must pass through byte-for-byte unchanged, got %+v", msg.Content)
+	}
+}
+
+// TestConvertAnthropicContentBlocksGrouped_GenuineThinkingOmitsItemID is the
+// grouped twin of the visible-thinking case. Grouped thinking items often
+// carry Type=reasoning with no ResponsesReasoning struct -- the shape a
+// ResponsesReasoning-only strip would miss.
+func TestConvertAnthropicContentBlocksGrouped_GenuineThinkingOmitsItemID(t *testing.T) {
+	const genuineSig = "EqoBCkYIARgCKkCVn3G8_grouped_anthropic_thinking_signature"
+	text := "I will run the grouped tests."
+	blocks := []AnthropicContentBlock{
+		{Type: AnthropicContentBlockTypeThinking, Thinking: &text, Signature: schemas.Ptr(genuineSig)},
+	}
+	roleVal := schemas.ResponsesMessageRoleType(AnthropicMessageRoleAssistant)
+
+	out := convertAnthropicContentBlocksToResponsesMessagesGrouped(blocks, &roleVal, false)
+	msg := findReasoningMessage(t, out)
+
+	if msg.ID != nil {
+		t.Errorf("unmarked grouped thinking id = %q, want nil", *msg.ID)
+	}
+	if msg.Content == nil || len(msg.Content.ContentBlocks) != 1 || msg.Content.ContentBlocks[0].Signature == nil || *msg.Content.ContentBlocks[0].Signature != genuineSig {
+		t.Errorf("genuine thinking signature must pass through byte-for-byte unchanged, got %+v", msg.Content)
+	}
+	if msg.ResponsesReasoning != nil {
+		t.Errorf("grouped thinking-only item should not grow a ResponsesReasoning struct, got %+v", msg.ResponsesReasoning)
+	}
+}
+
+// TestConvertAnthropicMessages_UnmarkedThinkingOmitsItemID pins the Claude
+// Code ingress used for OpenCode Go: keepToolsGrouped=false, so the ungrouped
+// converter runs. A thinking+tool_use assistant turn must not mint rs_*.
+func TestConvertAnthropicMessages_UnmarkedThinkingOmitsItemID(t *testing.T) {
+	const genuineSig = "EqoBCkYIARgCKkCVn3G8_claude_code_thinking_signature"
+	thinking := "I will call Bash."
+	toolID := "toolu_bash_1"
+	toolName := "Bash"
+	ctx := schemas.NewBifrostContext(nil, time.Time{})
+	messages := []AnthropicMessage{
+		{
+			Role: AnthropicMessageRoleAssistant,
+			Content: AnthropicContent{ContentBlocks: []AnthropicContentBlock{
+				{Type: AnthropicContentBlockTypeThinking, Thinking: &thinking, Signature: schemas.Ptr(genuineSig)},
+				{Type: AnthropicContentBlockTypeToolUse, ID: &toolID, Name: &toolName, Input: []byte(`{"command":"ls"}`)},
+			}},
+		},
+	}
+
+	out := ConvertAnthropicMessagesToBifrostMessages(ctx, messages, nil, false, false)
+	msg := findReasoningMessage(t, out)
+	if msg.ID != nil {
+		t.Errorf("Claude Code unmarked thinking id = %q, want nil", *msg.ID)
+	}
 }
 
 // TestConvertBifrostReasoning_BothSummaryAndEncryptedContentEmitBothBlocks pins
