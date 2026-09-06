@@ -9,6 +9,7 @@
 3. **修复：Anthropic 模型列表不再裁剪 id。** `/anthropic/v1/models` 与 OpenAI `/v1/models` 一样返回完整的 `provider/model`，避免客户端拿裁过的名字把请求打到错误的提供商。
 4. **修复：Responses→Chat 降级时保住前缀缓存。** Claude Code 打自定义 OpenAI 兼容后端时，丢掉 `prompt_cache_key*`、剥掉 billing system 块、把中途的 `role:system` 改写成 `<system-reminder>`，避免打爆 DeepSeek/GLM 的隐式前缀缓存。
 5. **修复：Anthropic thinking 回放不再伪造 reasoning item id。** Claude Code 回放未标记的 `thinking` / `redacted_thinking` 时不再铸造 `rs_*`；OpenCode Go（`store:false`）把这种 id 当成服务端句柄会 400。只恢复嵌入的真实 id；这条 400 会剥掉 reasoning id 再重试一次。不改 `prompt_cache_key*`，也不绕过 Semantic Cache。
+6. **修复：Anthropic 回放用稳定的 function_call item id。** Anthropic 转 Responses 时不再每轮给 `function_call` 铸造随机 `fc_*`，改为由稳定的 `call_id` 派生。OpenCode DeepSeek 的精确前缀缓存会在第一个变化的 `fc_*` 处断开。只出站剥掉 id 不够：日志仍在重铸，线上缓存仍约 1%。不改 `prompt_cache_key*`，也不绕过 Semantic Cache。
 
 上游同步用 rebase，不引入 merge commit。`enhanced` 上除上述 fork commit 外，历史与上游 `dev` 一致。
 
@@ -64,6 +65,22 @@ OpenAI `/v1/models` 返回完整 id，例如 `CommandCode/deepseek/deepseek-v4-f
 - 官方 OpenCode Go / Zen 出站时再剥一层 reasoning id。原生 OpenAI 仍会带上找回的嵌入 id，好让 `encrypted_content` 对得上。
 
 不启用 OpenCode 的 id 嵌入（它自己发的 id 同样不能回放）。不设置 Semantic Cache 绕过。不改 `prompt_cache_key*`。
+
+### Anthropic 回放使用稳定的 function_call item id
+
+这也是 bug 修复：Claude Code 走 `/anthropic/v1/messages` 打官方 OpenCode Go 时，Bifrost 把 Anthropic `tool_use` 转成 Responses `function_call`，并曾经给 **item** `id` 铸造一个每轮都变的随机 `fc_*`。真正用来配对工具结果的是 `call_id`（Anthropic `tool_use` id）。
+
+OpenCode DeepSeek 对整段 input 做精确前缀匹配，缓存会在第一个变化的 `fc_*` 处停住（常见只有大约 1% cache）。muse-spark 会忽略这些 item id，所以同样路径上缓存仍然很高。随机 `fc_*` 不会像 `rs_*` 那样让 OpenCode `store:false` 直接 400，请求能成功，只是几乎不命中缓存。
+
+只在 OpenCode 出站副本上剥掉这些 id **不够**：dashboard / `logs.db` 记的是转换后的内部请求，里面的 `fc_*` 照样每轮新的；那次部署后线上 `cached_read` 仍卡在大约 2k。
+
+现在会：
+
+- 在 Anthropic → Responses 转换时，用 `call_id` 的 sha256 派生稳定的 `fc_*` item id（空 `call_id` 则省略，不再随机铸造）；
+- OpenCode Go / Zen 出站仍只剥 reasoning item id（避免 400），**保留** 这个稳定的 function_call item id；
+- 原生 OpenAI 拿到同一套派生 id。
+
+不设置 Semantic Cache 绕过。不改 `prompt_cache_key*`。
 
 ## Dokploy 部署
 
