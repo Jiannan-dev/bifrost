@@ -5859,6 +5859,21 @@ func convertSingleAnthropicMessageToBifrostMessagesGrouped(msg *AnthropicMessage
 	return []schemas.ResponsesMessage{}
 }
 
+// responsesToolCallItemID returns a stable Responses item id derived from the
+// Anthropic tool_use id (call_id). A fresh random fc_* on every history replay
+// busts OpenCode DeepSeek exact-match prefix cache at the first reminted id
+// (~2k tokens, ~1% cache). Omitting the id on OpenCode egress is not enough:
+// logs still remint, and live cache stayed ~1% after that deploy. Empty call_id
+// omits the item id rather than minting random bytes. OpenAI's 64-char item-id
+// limit is kept: "fc_" + 50 hex chars.
+func responsesToolCallItemID(callID *string) *string {
+	if callID == nil || *callID == "" {
+		return nil
+	}
+	sum := sha256.Sum256([]byte(*callID))
+	return schemas.Ptr("fc_" + fmt.Sprintf("%x", sum)[:50])
+}
+
 // anthropicToolUseBlockToResponsesMessage converts one tool_use / server_tool_use /
 // mcp_tool_use block into the Responses item it maps to. Extracted so the grouped
 // converter can emit tool calls at the position they occupied in the turn instead of
@@ -5874,7 +5889,7 @@ func anthropicToolUseBlockToResponsesMessage(toolBlock *AnthropicContentBlock, i
 		},
 	}
 	if isOutputMessage {
-		bifrostMsg.ID = schemas.Ptr("fc_" + schemas.GetRandomString(50))
+		bifrostMsg.ID = responsesToolCallItemID(toolBlock.ID)
 	}
 
 	// Check for computer tool use
@@ -6526,7 +6541,7 @@ func convertAnthropicContentBlocksToResponsesMessages(ctx *schemas.BifrostContex
 						},
 					}
 					if isOutputMessage {
-						bifrostMsg.ID = schemas.Ptr("fc_" + schemas.GetRandomString(50))
+						bifrostMsg.ID = responsesToolCallItemID(block.ID)
 					}
 
 					// here need to check for computer tool use

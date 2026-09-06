@@ -498,6 +498,12 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 	// a server-side handle they cannot look up. Drop ids on the copy we are about
 	// to send; recovered OpenAI ids still reach OpenAI (this gate is OpenCode only).
 	// message is already a value copy, so nil-ing ID does not mutate bifrostReq.Input.
+	//
+	// Do not drop function_call item ids here. A previous egress-only omit left
+	// Anthropic conversion minting a fresh fc_* every turn (visible in logs) and
+	// live DeepSeek cache stayed ~1% — OpenCode appears to rehydrate a handle
+	// when id is missing. Stable ids are minted at Anthropic conversion from
+	// call_id and must reach this host.
 	if dropsResponsesReasoningItemIDs(bifrostReq.Provider) {
 		for i := range messages {
 			if messages[i].IsReasoningItem() {

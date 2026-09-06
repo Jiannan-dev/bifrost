@@ -2804,9 +2804,9 @@ func TestToOpenAIResponsesRequest_DropsReasoningItemIDsForOpenCode(t *testing.T)
 		},
 	}
 	user := schemas.ResponsesMessage{
-		ID:   schemas.Ptr("msg_user_1"),
-		Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage),
-		Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+		ID:      schemas.Ptr("msg_user_1"),
+		Type:    schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+		Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
 		Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hi")},
 	}
 
@@ -2876,4 +2876,75 @@ func TestToOpenAIResponsesRequest_DropsReasoningItemIDsForOpenCode(t *testing.T)
 			t.Errorf("expected OpenAI to keep the recovered id, got %+v", found.ID)
 		}
 	})
+}
+
+// TestToOpenAIResponsesRequest_KeepsFunctionCallItemIDsForOpenCode pins the
+// reversal of the failed egress-omit: OpenCode store:false still 400s on
+// reasoning ids, but a stable function_call item id must reach the host.
+// Live DeepSeek cache stayed ~1% when those ids were stripped on egress.
+func TestToOpenAIResponsesRequest_KeepsFunctionCallItemIDsForOpenCode(t *testing.T) {
+	wantCallID := "fc_" + strings.Repeat("a", 50)
+	call := schemas.ResponsesMessage{
+		ID:   schemas.Ptr(wantCallID),
+		Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
+		ResponsesToolMessage: &schemas.ResponsesToolMessage{
+			CallID:    schemas.Ptr("call_stable_tool_use"),
+			Name:      schemas.Ptr("Bash"),
+			Arguments: schemas.Ptr(`{"command":"ls"}`),
+		},
+	}
+	reasoning := schemas.ResponsesMessage{
+		ID:   schemas.Ptr("rs_placeholder"),
+		Type: schemas.Ptr(schemas.ResponsesMessageTypeReasoning),
+		Content: &schemas.ResponsesMessageContent{
+			ContentBlocks: []schemas.ResponsesMessageContentBlock{
+				{Type: schemas.ResponsesOutputMessageContentTypeReasoning, Text: schemas.Ptr("planning")},
+			},
+		},
+	}
+
+	for _, provider := range []schemas.ModelProvider{schemas.OpencodeGo, schemas.OpencodeZen, schemas.OpenAI} {
+		t.Run(string(provider), func(t *testing.T) {
+			req := &schemas.BifrostResponsesRequest{
+				Provider: provider,
+				Model:    "deepseek-v4-flash",
+				Input:    []schemas.ResponsesMessage{reasoning, call},
+			}
+			out := ToOpenAIResponsesRequest(nil, req)
+			if out == nil {
+				t.Fatal("ToOpenAIResponsesRequest returned nil")
+			}
+			var gotCall, gotReasoning *schemas.ResponsesMessage
+			for i := range out.Input.OpenAIResponsesRequestInputArray {
+				m := &out.Input.OpenAIResponsesRequestInputArray[i]
+				if m.Type != nil && *m.Type == schemas.ResponsesMessageTypeFunctionCall {
+					gotCall = m
+				}
+				if m.IsReasoningItem() {
+					gotReasoning = m
+				}
+			}
+			if gotCall == nil {
+				t.Fatal("expected function_call to reach the provider")
+			}
+			if gotCall.ID == nil || *gotCall.ID != wantCallID {
+				t.Errorf("expected function_call item id %q to survive, got %+v", wantCallID, gotCall.ID)
+			}
+			if gotCall.ResponsesToolMessage == nil || gotCall.ResponsesToolMessage.CallID == nil ||
+				*gotCall.ResponsesToolMessage.CallID != "call_stable_tool_use" {
+				t.Errorf("expected call_id to survive, got %+v", gotCall.ResponsesToolMessage)
+			}
+			if provider == schemas.OpencodeGo || provider == schemas.OpencodeZen {
+				if gotReasoning == nil {
+					t.Fatal("expected reasoning item to reach OpenCode")
+				}
+				if gotReasoning.ID != nil {
+					t.Errorf("expected OpenCode reasoning item id to be dropped, got %q", *gotReasoning.ID)
+				}
+			}
+			if call.ID == nil || *call.ID != wantCallID {
+				t.Error("expected the caller's function_call item id to be left intact")
+			}
+		})
+	}
 }
