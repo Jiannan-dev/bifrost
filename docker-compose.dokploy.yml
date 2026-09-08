@@ -37,7 +37,7 @@ services:
   # http://cli-proxy-api:8317 (no /v1 suffix). After first deploy, log in once:
   #   docker compose exec -it cli-proxy-api ./CLIProxyAPI -codex-device-login
   cli-proxy-api:
-    image: ${CLIPROXY_IMAGE:-eceasy/cli-proxy-api:v7.2.141}
+    image: ${CLIPROXY_IMAGE:-eceasy/cli-proxy-api:v7.2.154}
     restart: unless-stopped
     environment:
       CLIPROXY_API_KEY: ${CLIPROXY_API_KEY:?Set CLIPROXY_API_KEY in Dokploy}
