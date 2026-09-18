@@ -107,7 +107,9 @@ Service: bifrost
 Port: 8080
 ```
 
-部署使用内置 SQLite，不需要配置外部数据库。Compose 会把整个数据目录持久化到 Docker Volume：
+配置继续用 SQLite（`config.db`）。请求日志走现有 `infra-postgres` 上的独立库 `bifrost_logs`，不要写进 Dokploy 控制面库，也不要和 AlphaDesk 的 `alpha` 库混用。Compose 会把 `bifrost` 挂进外部 Docker 网络 `postgres`，并继续留在 `default` 以便访问 CLIProxyAPI。
+
+数据目录持久化到 Docker Volume：
 
 ```text
 bifrost-data → /app/data
@@ -117,10 +119,10 @@ bifrost-data → /app/data
 
 ```text
 /app/data/config.db
-/app/data/logs.db
+/app/data/.pg_logs_password   # 日志库口令，不进 git
 ```
 
-重新部署容器不会丢失配置和日志。不要删除 `bifrost-data` volume，也不要在首次部署后更换 `BIFROST_ENCRYPTION_KEY`。
+日志保留 3 天。重新部署容器不会丢失配置。不要删除 `bifrost-data` volume，也不要在首次部署后更换 `BIFROST_ENCRYPTION_KEY`。
 
 Compose 同时会挂载 `config.dokploy.json`、构建当前 fork 源码，并通过 `/health` 检查服务。CLIProxyAPI 跑在同一 Compose 里，不对外暴露 8317；Bifrost 通过内部网络访问。首次部署后需要在 sidecar 里完成一次 Codex 登录。
 
