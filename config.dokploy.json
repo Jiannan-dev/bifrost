@@ -5,5 +5,28 @@
       "disable_auto_tool_inject": true,
       "tool_execution_timeout": 60
     }
+  },
+  "logs_store": {
+    "enabled": true,
+    "type": "postgres",
+    "retention_days": 3,
+    "config": {
+      "host": "infra-postgres",
+      "port": "5432",
+      "user": "bifrost_logs",
+      "db_name": "bifrost_logs",
+      "ssl_mode": "disable",
+      "max_idle_conns": 5,
+      "max_open_conns": 15,
+      "conn_max_lifetime": "30m",
+      "conn_max_idle_time": "10m",
+      "matview_refresh_interval": "5m",
+      "password_command": {
+        "command": "/bin/cat",
+        "args": ["/app/data/.pg_logs_password"],
+        "timeout": "5s",
+        "cache_ttl": "24h"
+      }
+    }
   }
 }

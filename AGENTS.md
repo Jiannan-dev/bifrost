@@ -81,11 +81,13 @@ Search-capable requests set `BifrostContextKeyBypassSemanticCache` so a stale an
 - Config lives in the repo root `config.dokploy.json`; Dokploy builds from git and mounts it read-only into the container at `/app/data/config.json`.
 - Editing the file on the server is futile — the next deployment overwrites it from git. Correct flow: edit repo file → commit → push → Dokploy redeploys automatically.
 - The file's `tool_manager_config` and UI/DB-managed MCP clients (SQLite `config.db`) coexist without overwriting each other: `loadMCPConfig`/`mergeMCPConfig` keep DB clients even when the file declares none.
+- Request logs go to PostgreSQL (`logs_store` in `config.dokploy.json`). Do **not** put a `client` section in that file just to change retention: hash reconciliation would replace the whole DB client row. Set `config_client.log_retention_days` in SQLite instead. The PG password is **not** in git; the container reads `/app/data/.pg_logs_password` via `password_command`.
 
 **Current production state (check before assuming):**
 
-- Prod server alias: `tssh orangeVPS-4C16G` (read-only discipline — never modify; avoid reading `headers_json` / keys).
-- Bifrost data DB: `/var/lib/docker/volumes/infra-bifrost-4mfkue_bifrost-data/_data/config.db` (host has no `sqlite3`; use `python3` with `sqlite3.connect("file:...config.db?mode=ro&immutable=0", uri=True)`).
+- Prod server alias: `tssh orangeVPS-4C16G` (read-only discipline unless the operator asked for a mutation; never read `headers_json` / keys).
+- Bifrost data dir: `/var/lib/docker/volumes/infra-bifrost-4mfkue_bifrost-data/_data/` (`config.db` stays SQLite; `logs.db` is the pre-cutover file and should not be reopened once PG is live). Host has no `sqlite3`; use `python3` with `sqlite3.connect("file:...config.db?mode=ro&immutable=0", uri=True)`.
+- Logs database: `infra-postgres` / `bifrost_logs` (do **not** use `dokploy-postgres` or the `alpha` database). Bifrost must be on the external Docker network `postgres` to resolve `infra-postgres`.
 - MCP clients table: `config_mcp_clients` (query `name`, `client_id`, `tools_to_execute_json`, `tools_to_auto_execute_json`; skip `headers_json`).
 - Exa client `Name` is `Exa` (uppercase), so the fallback is `Exa-web_search_exa`. Verify with bifrost logs: `forced web_search auxiliary request intercepted; executing MCP tool "Exa-web_search_exa"`.
 
@@ -152,7 +154,10 @@ Required deployment settings:
 - Container port: `8080`
 - Persistent volume: `/app/data`
 - Startup config: `config.dokploy.json` (mounted read-only by Compose)
-- Persistence: built-in SQLite on the `bifrost-data` volume mounted at `/app/data`
+- Persistence: SQLite `config.db` on the `bifrost-data` volume at `/app/data`; request logs on `infra-postgres` database `bifrost_logs`
+- Compose networks: attach the `bifrost` service to the external Docker network `postgres` (name `postgres`) so it can reach `infra-postgres`. Keep `default` so it can still reach `cli-proxy-api`.
+- Log retention: 3 days (`config_client.log_retention_days` in SQLite plus `logs_store.retention_days` in the file). Do not add a partial `client` block to `config.dokploy.json`.
+- PG password file: `/app/data/.pg_logs_password` on the volume (uid 1000, mode 400). Not in git.
 - Health check: `/health`
 - Runtime secrets: configure provider and search credentials as environment variables; never commit them to configuration files
 
