@@ -122,7 +122,7 @@ bifrost-data → /app/data
 /app/data/config.db
 ```
 
-日志保留 3 天。重新部署容器不会丢失配置。不要删除 `bifrost-data` volume，也不要在首次部署后更换 `BIFROST_ENCRYPTION_KEY`。
+日志保留 7 天（界面：Logs Settings → Log Retention Days）。重新部署容器不会丢失配置。不要删除 `bifrost-data` volume，也不要在首次部署后更换 `BIFROST_ENCRYPTION_KEY`。
 
 Compose 同时会挂载 `config.dokploy.json`、构建当前 fork 源码，并通过 `/health` 检查服务。CLIProxyAPI 跑在同一 Compose 里，不对外暴露 8317；Bifrost 通过内部网络访问。首次部署后需要在 sidecar 里完成一次 Codex 登录。
 
