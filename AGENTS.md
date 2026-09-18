@@ -81,7 +81,7 @@ Search-capable requests set `BifrostContextKeyBypassSemanticCache` so a stale an
 - Config lives in the repo root `config.dokploy.json`; Dokploy builds from git and mounts it read-only into the container at `/app/data/config.json`.
 - Editing the file on the server is futile — the next deployment overwrites it from git. Correct flow: edit repo file → commit → push → Dokploy redeploys automatically.
 - The file's `tool_manager_config` and UI/DB-managed MCP clients (SQLite `config.db`) coexist without overwriting each other: `loadMCPConfig`/`mergeMCPConfig` keep DB clients even when the file declares none.
-- Request logs go to PostgreSQL (`logs_store` in `config.dokploy.json`). Do **not** put a `client` section in that file just to change retention: hash reconciliation would replace the whole DB client row. Set `config_client.log_retention_days` in SQLite instead. The PG password is **not** in git; the container reads `/app/data/.pg_logs_password` via `password_command`.
+- Request logs go to PostgreSQL (`logs_store` in `config.dokploy.json`). Do **not** put a `client` section in that file just to change retention: hash reconciliation would replace the whole DB client row. Set `config_client.log_retention_days` in SQLite instead. The PG password is Dokploy env `BIFROST_LOGS_PG_PASSWORD` (`env.BIFROST_LOGS_PG_PASSWORD` in config); never commit it.
 
 **Current production state (check before assuming):**
 
@@ -157,7 +157,7 @@ Required deployment settings:
 - Persistence: SQLite `config.db` on the `bifrost-data` volume at `/app/data`; request logs on `infra-postgres` database `bifrost_logs`
 - Compose networks: attach the `bifrost` service to the external Docker network `postgres` (name `postgres`) so it can reach `infra-postgres`. Keep `default` so it can still reach `cli-proxy-api`.
 - Log retention: 3 days (`config_client.log_retention_days` in SQLite plus `logs_store.retention_days` in the file). Do not add a partial `client` block to `config.dokploy.json`.
-- PG password file: `/app/data/.pg_logs_password` on the volume (uid 1000, mode 400). Not in git.
+- PG password: Dokploy environment variable `BIFROST_LOGS_PG_PASSWORD` (required by Compose). Not in git.
 - Health check: `/health`
 - Runtime secrets: configure provider and search credentials as environment variables; never commit them to configuration files
 

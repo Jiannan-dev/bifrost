@@ -97,6 +97,7 @@ Compose file: docker-compose.dokploy.yml
 ```text
 BIFROST_SETUP_TOKEN=<随机的首次管理员初始化密钥>
 BIFROST_ENCRYPTION_KEY=<固定的数据加密密钥>
+BIFROST_LOGS_PG_PASSWORD=<infra-postgres 库 bifrost_logs 的口令>
 CLIPROXY_API_KEY=<CLIProxyAPI 与 Bifrost 之间的共享密钥>
 ```
 
@@ -119,7 +120,6 @@ bifrost-data → /app/data
 
 ```text
 /app/data/config.db
-/app/data/.pg_logs_password   # 日志库口令，不进 git
 ```
 
 日志保留 3 天。重新部署容器不会丢失配置。不要删除 `bifrost-data` volume，也不要在首次部署后更换 `BIFROST_ENCRYPTION_KEY`。
