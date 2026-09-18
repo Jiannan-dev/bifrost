@@ -21,12 +21,7 @@
       "conn_max_lifetime": "30m",
       "conn_max_idle_time": "10m",
       "matview_refresh_interval": "5m",
-      "password_command": {
-        "command": "/bin/cat",
-        "args": ["/app/data/.pg_logs_password"],
-        "timeout": "5s",
-        "cache_ttl": "24h"
-      }
+      "password": "env.BIFROST_LOGS_PG_PASSWORD"
     }
   }
 }
