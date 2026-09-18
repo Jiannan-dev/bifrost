@@ -9,7 +9,7 @@
   "logs_store": {
     "enabled": true,
     "type": "postgres",
-    "retention_days": 3,
+    "retention_days": 7,
     "config": {
       "host": "infra-postgres",
       "port": "5432",
