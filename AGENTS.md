@@ -156,7 +156,7 @@ Required deployment settings:
 - Startup config: `config.dokploy.json` (mounted read-only by Compose)
 - Persistence: SQLite `config.db` on the `bifrost-data` volume at `/app/data`; request logs on `infra-postgres` database `bifrost_logs`
 - Compose networks: attach the `bifrost` service to the external Docker network `postgres` (name `postgres`) so it can reach `infra-postgres`. Keep `default` so it can still reach `cli-proxy-api`.
-- Log retention: 3 days (`config_client.log_retention_days` in SQLite plus `logs_store.retention_days` in the file). Do not add a partial `client` block to `config.dokploy.json`.
+- Log retention: 7 days (`config_client.log_retention_days` in SQLite plus `logs_store.retention_days` in the file). The UI field is **Logs Settings → Log Retention Days** (`/workspace/config/logging`). Do not add a partial `client` block to `config.dokploy.json`.
 - PG password: Dokploy environment variable `BIFROST_LOGS_PG_PASSWORD` (required by Compose). Not in git.
 - Health check: `/health`
 - Runtime secrets: configure provider and search credentials as environment variables; never commit them to configuration files
