@@ -32,6 +32,9 @@ services:
       timeout: 10s
       start_period: 15s
       retries: 3
+    networks:
+      - default
+      - postgres
 
   # OpenAI Codex OAuth sidecar. Not published; Bifrost reaches it as
   # http://cli-proxy-api:8317 (no /v1 suffix). After first deploy, log in once:
@@ -68,3 +71,8 @@ volumes:
   bifrost-data:
   cliproxy-auth:
   cliproxy-logs:
+
+networks:
+  postgres:
+    external: true
+    name: postgres
