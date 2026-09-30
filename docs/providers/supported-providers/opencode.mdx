@@ -312,6 +312,30 @@ For context window sizes and model capability metadata, point `pricing_url` and 
 
 ---
 
+## Session Affinity (`x-opencode-session`)
+
+OpenCode Go asks each client for a stable `x-opencode-session` per conversation, which OpenCode uses to optimize routing and prompt caching. Header-less Go requests are rejected. Zen does not enforce the header. Bifrost sends it to both gateways: Zen ignores it, and the same value keeps a zen-to-go fallback on one session.
+
+Bifrost resolves the value once per request and forwards it on chat and responses calls, including streaming. `ListModels` does not send it.
+
+1. A client-sent `x-opencode-session` header is forwarded after a header-safe charset check.
+2. Otherwise the request's existing session identity is reused (`x-bf-session-id`, then harness headers such as Claude Code's `x-claude-code-session-id`).
+3. Otherwise Bifrost synthesizes a one-off UUID so this request stays compliant. The next turn gets a different ID, so multi-turn cache affinity still needs a stable session from the client.
+
+The upstream value is namespaced by the settled grant identity: the virtual-key row ID, otherwise the user ID, otherwise the presented virtual-key string. That scope is hashed and prefixed to the session, so two tenants asserting the same session string do not share cache warmth. With no tenant scope, the raw value is sent.
+
+The header is stored on its own context key and emitted only by the OpenCode provider. It is not placed in shared extra headers, so other providers do not receive it. A static `x-opencode-session` in `network_config.extra_headers` would pin every conversation to one session. A configured header filter that denies `x-opencode-session` suppresses capture, including the synthesized UUID.
+
+```bash
+curl http://localhost:8080/v1/chat/completions \
+  -H "Authorization: Bearer $BIFROST_VK" \
+  -H "x-opencode-session: my-conversation-123" \
+  -H "Content-Type: application/json" \
+  -d '{"model": "opencode-go/glm-5", "messages": [{"role": "user", "content": "hi"}]}'
+```
+
+---
+
 ## Caveats
 
 <Accordion title="No Central Datasheet Entries Yet">
