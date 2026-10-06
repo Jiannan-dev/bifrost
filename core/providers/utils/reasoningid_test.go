@@ -105,6 +105,8 @@ func TestShouldEmbedReasoningItemID(t *testing.T) {
 		{"Vertex with Gemini", schemas.Vertex, "gemini-2.5-pro", "", false},
 		{"Vertex with Claude", schemas.Vertex, "claude-sonnet-4-6", "", false},
 		{"DeepSeek is never true", schemas.DeepSeek, "deepseek-chat", "", false},
+		{"OpenCode Go is never true", schemas.OpencodeGo, "muse-spark-1.3-contributor", "", false},
+		{"OpenCode Zen is never true", schemas.OpencodeZen, "claude-sonnet-4-6", "", false},
 		{"Anthropic is never true", schemas.Anthropic, "claude-sonnet-4-6", "", false},
 		{"Bedrock is never true", schemas.Bedrock, "anthropic.claude-opus-4-8", "", false},
 		{"custom provider on base OpenAI, deployment-style model", "my-openai", "my-gpt-deployment", schemas.OpenAI, true},
