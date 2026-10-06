@@ -742,7 +742,16 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 		// without one (a foreign shape the schema could not map) must still carry
 		// "summary": [] - OpenAI accepts that and rejects the item without the field;
 		// a nil slice would marshal as null. Clone before setting.
-		if message.Type != nil && *message.Type == schemas.ResponsesMessageTypeReasoning {
+		//
+		// OpenCode replays Claude Code thinking as content blocks with no summary.
+		// Synthesizing an empty summary here makes the skip below drop the item,
+		// so store:false hosts never see the thinking text. Leave those items
+		// untouched; the OpenCode egress below only clears the item id.
+		if message.Type != nil && *message.Type == schemas.ResponsesMessageTypeReasoning &&
+			!(dropsResponsesReasoningItemIDs(bifrostReq.Provider) &&
+				message.ResponsesReasoning == nil &&
+				message.Content != nil &&
+				len(message.Content.ContentBlocks) > 0) {
 			if message.ResponsesReasoning == nil {
 				message.ResponsesReasoning = &schemas.ResponsesReasoning{Summary: []schemas.ResponsesReasoningSummary{}}
 			} else if message.ResponsesReasoning.Summary == nil {
@@ -879,6 +888,18 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 		usesPromptCacheOptions := responsesUsesPromptCacheOptions(caps, cachePromptProvider, capModel)
 		applyResponsesCacheBreakpoints(messages, usesPromptCacheOptions)
 		needsExplicitPromptCacheMode = usesPromptCacheOptions && responsesHasPromptCacheBreakpoint(messages)
+	}
+
+	// OpenCode Go/Zen run /v1/responses with store:false, so a reasoning item id is
+	// a server-side handle they cannot look up. Drop ids on the copy we are about
+	// to send; recovered OpenAI ids still reach OpenAI (this gate is OpenCode only).
+	// message is already a value copy, so nil-ing ID does not mutate bifrostReq.Input.
+	if dropsResponsesReasoningItemIDs(bifrostReq.Provider) {
+		for i := range messages {
+			if messages[i].IsReasoningItem() {
+				messages[i].ID = nil
+			}
+		}
 	}
 
 	// Updating params
@@ -1099,6 +1120,10 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 	}
 
 	return req
+}
+
+func dropsResponsesReasoningItemIDs(provider schemas.ModelProvider) bool {
+	return provider == schemas.OpencodeGo || provider == schemas.OpencodeZen
 }
 
 // samplingParamUnsupported reports whether the model rejects a sampling field
