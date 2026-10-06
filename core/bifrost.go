@@ -7109,11 +7109,12 @@ func executeRequestWithRetries[T any](
 	// to learn whether the *next* key selection actually picks a different key. -1 = no pending.
 	pendingRotationAttemptIdx := -1
 	// Attempts granted outside the configured retry budget. MaxRetries defaults to 0, and
-	// two things deserve an attempt regardless of how the budget is tuned: a request that
+	// three things deserve an attempt regardless of how the budget is tuned: a request that
 	// would otherwise die on a rejected encrypted-reasoning replay gets its one stripped
-	// attempt, and a permanent per-key failure gets the walk to the next key, since the
-	// budget bounds retries against a key that might recover, not the move away from one
-	// that never will. The walk is bounded by the pool: the keyProvider reports
+	// attempt, one that would die on a missing or expired reasoning item id gets its one
+	// id-stripped attempt, and a permanent per-key failure gets the walk to the next key,
+	// since the budget bounds retries against a key that might recover, not the move away
+	// from one that never will. The walk is bounded by the pool: the keyProvider reports
 	// errAllKeysDead once no key is left.
 	extraAttempts := 0
 	// True once encrypted_content has been stripped from the request, so the fail-soft
@@ -7122,6 +7123,13 @@ func executeRequestWithRetries[T any](
 	// True iff the previous attempt failed on rejected encrypted reasoning and we stripped
 	// it. Used to skip backoff: the payload changed, so there is nothing to wait out.
 	lastWasEncryptedContentStrip := false
+	// True once reasoning item ids have been stripped, so that fail-soft also fires
+	// at most once per request.
+	strippedReasoningItemIDs := false
+	// True iff the previous attempt failed on a missing/expired reasoning item id
+	// and we stripped those ids. Used to skip backoff the same way as the
+	// encrypted-content strip: the payload changed, so there is nothing to wait out.
+	lastWasReasoningItemIDStrip := false
 
 	for attempts = 0; attempts <= config.NetworkConfig.MaxRetries+extraAttempts; attempts++ {
 		ctx.SetValue(schemas.BifrostContextKeyNumberOfRetries, attempts)
@@ -7317,7 +7325,7 @@ func executeRequestWithRetries[T any](
 			// credential swap or a stripped replay.
 			ctxEnded := false
 			stage := "before retry dispatch"
-			if !((lastWasPermanentKeyFailure && keyChanged) || lastWasEncryptedContentStrip) {
+			if !((lastWasPermanentKeyFailure && keyChanged) || lastWasEncryptedContentStrip || lastWasReasoningItemIDStrip) {
 				backoff := calculateBackoff(attempts-1, config)
 				logger.Debug("sleeping for %s before retry", backoff)
 				ctxEnded = waitRetryBackoff(ctx, backoff)
@@ -7627,6 +7635,24 @@ func executeRequestWithRetries[T any](
 			}
 			last.FailReason = &reason
 			ctx.SetValue(schemas.BifrostContextKeyAttemptTrail, trail)
+		}
+
+		// Fail soft when the upstream refuses a replayed reasoning item id. store:false
+		// OpenAI-compatible hosts (OpenCode Go) treat input[].id as a server-side handle.
+		// A minted placeholder cannot be looked up, and retrying the same id cannot help,
+		// so drop reasoning ids only -- keep summaries, thinking text, and
+		// encrypted_content -- and give the request one more attempt on the same key.
+		// Runs once per request. Checked before the encrypted-content strip because the
+		// two rewrites are opposites (this one keeps ciphertext and drops ids).
+		lastWasReasoningItemIDStrip = false
+		if !shouldRetry && !strippedReasoningItemIDs && isReasoningItemIDRejection(bifrostError) &&
+			stripResponsesReasoningItemIDs(ctx, req) {
+			strippedReasoningItemIDs = true
+			lastWasReasoningItemIDStrip = true
+			extraAttempts++
+			shouldRetry = true
+			logger.Warn("upstream rejected a replayed reasoning item id for %s/%s; retrying once without reasoning item ids: %s", providerKey, model, errMessage)
+			ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelWarn, fmt.Sprintf("Stripped unreplayable reasoning item ids from the request to %s/%s and retrying once", providerKey, model))
 		}
 
 		// Fail soft on a 400 when the request replays encrypted reasoning. The ciphertext
