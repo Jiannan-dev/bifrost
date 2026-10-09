@@ -31,6 +31,7 @@ import { useCookies } from "react-cookie";
 import { Trans, useTranslation } from "react-i18next";
 import { preserveTimeFilters } from "./navigation/navItem";
 import { getNavItemHref, type NavItem, useNavItems } from "./navigation/navItems";
+import { isUpstreamPromoCardHidden } from "./sidebar.utils";
 import { Badge } from "./ui/badge";
 import { PromoCardStack } from "./ui/promoCardStack";
 
@@ -423,7 +424,8 @@ export default function AppSidebar() {
 	const isProductionSetupDismissed = !!cookies[PRODUCTION_SETUP_DISMISSED_COOKIE];
 	const isOnboardingCardDismissed = !!cookies[ONBOARDING_CARD_DISMISSED_COOKIE];
 	const { data: latestRelease } = useGetLatestReleaseQuery(undefined, {
-		skip: !mounted, // Only fetch after component is mounted
+		// Fork: do not call getbifrost.ai when the release card is suppressed.
+		skip: !mounted || isUpstreamPromoCardHidden("new-release"),
 	});
 	const { data: coreConfig } = useGetCoreConfigQuery({});
 	// OSS setup lock: true while dashboard auth is not configured, so management APIs
@@ -782,7 +784,9 @@ export default function AppSidebar() {
 				dismissible: true,
 			});
 		}
-		return cards;
+		// Fork: drop the release-upgrade and production-setup sales cards.
+		// Setup lock, restart required, and onboarding resume stay.
+		return cards.filter((card) => !isUpstreamPromoCardHidden(card.id));
 	}, [
 		setupRequired,
 		coreConfig?.restart_required,
