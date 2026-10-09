@@ -80,6 +80,7 @@ import { ChevronRight } from "lucide-react";
 import { useTheme } from "next-themes";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useCookies } from "react-cookie";
+import { isUpstreamPromoCardHidden } from "./sidebar.utils";
 import { Badge } from "./ui/badge";
 import { PromoCardStack } from "./ui/promoCardStack";
 
@@ -532,7 +533,8 @@ export default function AppSidebar() {
 	const isProductionSetupDismissed = !!cookies[PRODUCTION_SETUP_DISMISSED_COOKIE];
 	const isOnboardingCardDismissed = !!cookies[ONBOARDING_CARD_DISMISSED_COOKIE];
 	const { data: latestRelease } = useGetLatestReleaseQuery(undefined, {
-		skip: !mounted, // Only fetch after component is mounted
+		// Fork: do not call getbifrost.ai when the release card is suppressed.
+		skip: !mounted || isUpstreamPromoCardHidden("new-release"),
 	});
 	const hasLogsAccess = useRbac(RbacResource.Logs, RbacOperation.View);
 	const hasObservabilityAccess = useRbac(RbacResource.Observability, RbacOperation.View);
@@ -1443,7 +1445,9 @@ export default function AppSidebar() {
 		if (!IS_ENTERPRISE && mounted && !isProductionSetupDismissed) {
 			cards.push(productionSetupHelpCard);
 		}
-		return cards;
+		// Fork: drop the release-upgrade and production-setup sales cards.
+		// Setup lock, restart required, and onboarding resume stay.
+		return cards.filter((card) => !isUpstreamPromoCardHidden(card.id));
 	}, [
 		setupRequired,
 		coreConfig?.restart_required,
