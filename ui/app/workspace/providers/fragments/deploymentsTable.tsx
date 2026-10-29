@@ -476,6 +476,10 @@ function ProviderSection({ providerName, ...props }: ProviderSectionProps & { pr
 			return <UseAnthropicEndpointsToggleSection providerName="Fireworks" {...props} />;
 		case "vllm":
 			return <UseAnthropicEndpointsToggleSection providerName="vLLM" {...props} />;
+		case "opencode-go":
+			return <UseAnthropicEndpointsToggleSection providerName="OpenCode Go" {...props} />;
+		case "opencode-zen":
+			return <UseAnthropicEndpointsToggleSection providerName="OpenCode Zen" {...props} />;
 		default:
 			return null;
 	}
