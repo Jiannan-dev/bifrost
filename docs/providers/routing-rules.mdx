@@ -85,6 +85,22 @@ headers["x-api-version"] == "v2"
 headers["user-agent"].contains("mobile")
 ```
 
+#### Request Tools
+```cel
+tool_types       // Distinct tool types the request declares (list of strings), e.g. ["function", "web_search"]
+```
+
+Native server tools keep their neutral type: Anthropic `web_search_20250305` and OpenAI `web_search` both appear as `"web_search"`, while client tools appear as `"function"` or `"custom"`. A request without tools has an empty list.
+
+**Tool Examples:**
+```cel
+"web_search" in tool_types                              // Requests carrying a native web search tool
+"web_search" in tool_types && team_name == "dev"        // Only one team's search turns
+tool_types.exists(t, t.startsWith("web_search"))        // web_search or web_search_preview
+```
+
+Claude Code's built-in `WebSearch` sends a separate request whose only tool is a native `web_search` server tool, while its normal turns carry function tools only. A rule on `tool_types` can therefore send just the search requests to a model whose provider runs web search server-side (for example a DeepSeek key or alias with `use_anthropic_endpoints`), and leave the main model unchanged.
+
 #### Organization Context
 ```cel
 virtual_key_id             // VK ID (string, empty if no VK)
