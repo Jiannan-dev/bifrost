@@ -1325,3 +1325,15 @@ cd ui && npm run build
 * Follow **strict folder structure and routing conventions**
 * Use **the right tool for the right problem**
 * Keep code **simple, predictable, and maintainable**
+
+---
+
+## Cursor Cloud specific instructions
+
+The Cloud Agent image's `/usr/bin/go` is older than this workspace. Install and use Go **1.27.3** from `/usr/local/go` (linked as `/usr/local/bin/go`) so it wins over `/usr/bin/go`. Node is the version in `.nvmrc` (22.12.0), installed with nvm and linked onto `/usr/local/bin`. `make setup-workspace` creates the gitignored `go.work`. `air` is installed for hot reload.
+
+On boot the UI dev server is `http://localhost:3000` and the API is `http://localhost:8080`. App data lives in `$HOME/bifrost-data`. The dashboard API stays locked until a setup token exists: boot writes one to `$HOME/bifrost-data/.setup-token` and passes it as `BIFROST_SETUP_TOKEN`. Send that value in the `X-Bifrost-Setup-Token` header, or paste it on `http://localhost:3000/login`. Do not commit the token file.
+
+`/health`, the dashboard, and provider configuration work without provider API keys. Live provider tests (`make test-core` against a real provider) need those secrets, which this environment does not have. Docker and `tests/docker-compose.yml` are not started, so framework tests that need Postgres, Weaviate, Qdrant, or Redis are outside this environment.
+
+`go:embed all:ui` fails unless `transports/bifrost-http/ui` exists. Create that directory (a placeholder file is enough) before `go build` when the production UI has not been copied in.
