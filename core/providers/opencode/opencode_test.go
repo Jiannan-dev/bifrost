@@ -496,3 +496,103 @@ func TestOpencodeResponsesRouting(t *testing.T) {
 		})
 	}
 }
+
+type quietLogger struct{}
+
+func (quietLogger) Debug(string, ...any)                   {}
+func (quietLogger) Info(string, ...any)                    {}
+func (quietLogger) Warn(string, ...any)                    {}
+func (quietLogger) Error(string, ...any)                   {}
+func (quietLogger) Fatal(string, ...any)                   {}
+func (quietLogger) SetLevel(schemas.LogLevel)              {}
+func (quietLogger) SetOutputType(schemas.LoggerOutputType) {}
+func (quietLogger) LogHTTPRequest(schemas.LogLevel, string) schemas.LogEventBuilder {
+	return schemas.NoopLogEvent
+}
+
+// TestOpencodeProviderUseAnthropicEndpoints pins the use_anthropic_endpoints toggle: chat and
+// responses (unary and streaming) go to OpenCode's Anthropic Messages endpoint with x-api-key and
+// the per-request x-opencode-session, which Go rejects without; an untoggled key keeps /v1/responses.
+func TestOpencodeProviderUseAnthropicEndpoints(t *testing.T) {
+	type seen struct{ path, apiKey, auth, session string }
+	var (
+		mu  sync.Mutex
+		got []seen
+	)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		got = append(got, seen{r.URL.Path, r.Header.Get("x-api-key"), r.Header.Get("Authorization"), r.Header.Get("X-Opencode-Session")})
+		mu.Unlock()
+		_, _ = io.Copy(io.Discard, r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/v1/responses" {
+			_, _ = w.Write([]byte(`{"id":"resp_1","object":"response","model":"qwen3.8-flash","output":[]}`))
+			return
+		}
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"type":"error","error":{"type":"invalid_request_error","message":"probe"}}`))
+	}))
+	defer server.Close()
+
+	provider, err := NewOpencodeGoProvider(&schemas.ProviderConfig{NetworkConfig: schemas.NetworkConfig{BaseURL: server.URL, DefaultRequestTimeoutInSeconds: 10}}, quietLogger{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	responsesReq := &schemas.BifrostResponsesRequest{Provider: schemas.OpencodeGo, Model: "qwen3.8-flash", Input: []schemas.ResponsesMessage{{
+		Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser), Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hi")},
+	}}}
+	chatReq := &schemas.BifrostChatRequest{Provider: schemas.OpencodeGo, Model: "qwen3.8-flash", Input: []schemas.ChatMessage{{
+		Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")},
+	}}}
+	noopPostHook := func(_ *schemas.BifrostContext, r *schemas.BifrostResponse, e *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+		return r, e
+	}
+	drain := func(ch chan *schemas.BifrostStreamChunk) {
+		for range ch {
+		}
+	}
+
+	anthropicKey := schemas.Key{Value: *schemas.NewSecretVar("oc-key"), UseAnthropicEndpoints: schemas.Ptr(true)}
+	calls := map[string]func(*schemas.BifrostContext, schemas.Key){
+		"responses": func(ctx *schemas.BifrostContext, k schemas.Key) { _, _ = provider.Responses(ctx, k, responsesReq) },
+		"responses stream": func(ctx *schemas.BifrostContext, k schemas.Key) {
+			if ch, _ := provider.ResponsesStream(ctx, noopPostHook, nil, k, responsesReq); ch != nil {
+				drain(ch)
+			}
+		},
+		"chat": func(ctx *schemas.BifrostContext, k schemas.Key) { _, _ = provider.ChatCompletion(ctx, k, chatReq) },
+		"chat stream": func(ctx *schemas.BifrostContext, k schemas.Key) {
+			if ch, _ := provider.ChatCompletionStream(ctx, noopPostHook, nil, k, chatReq); ch != nil {
+				drain(ch)
+			}
+		},
+	}
+	for name, call := range calls {
+		mu.Lock()
+		got = nil
+		mu.Unlock()
+		ctx, cancel := schemas.NewBifrostContextWithTimeout(context.Background(), 10*time.Second)
+		ctx.SetValue(schemas.BifrostContextKeyOpencodeSession, "conv-1")
+		call(ctx, anthropicKey)
+		cancel()
+		mu.Lock()
+		if len(got) != 1 {
+			t.Fatalf("%s: upstream requests = %d, want 1", name, len(got))
+		}
+		s := got[0]
+		mu.Unlock()
+		if s.path != "/v1/messages" || s.apiKey != "oc-key" || s.auth != "" || s.session == "" {
+			t.Errorf("%s: got %+v, want /v1/messages with x-api-key, no bearer, and a session", name, s)
+		}
+	}
+
+	mu.Lock()
+	got = nil
+	mu.Unlock()
+	ctx, cancel := schemas.NewBifrostContextWithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	_, _ = provider.Responses(ctx, schemas.Key{Value: *schemas.NewSecretVar("oc-key")}, responsesReq)
+	if len(got) != 1 || got[0].path != "/v1/responses" || got[0].auth != "Bearer oc-key" {
+		t.Errorf("untoggled key: got %+v, want /v1/responses with bearer auth", got)
+	}
+}
