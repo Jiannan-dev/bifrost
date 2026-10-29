@@ -10,6 +10,7 @@
 4. **修复：Anthropic thinking 回放不再伪造 reasoning item id。** Claude Code 回放未标记的 `thinking` / `redacted_thinking` 时不再铸造 `rs_*`；OpenCode Go（`store:false`）把这种 id 当成服务端句柄会 400。只恢复嵌入的真实 id；这条 400 会剥掉 reasoning id 再重试一次。不改 `prompt_cache_key*`，也不绕过 Semantic Cache。
 5. **修复：Anthropic 回放用稳定的 function_call item id。** Anthropic 转 Responses 时不再每轮给 `function_call` 铸造随机 `fc_*`，改为由稳定的 `call_id` 派生。OpenCode DeepSeek 的精确前缀缓存会在第一个变化的 `fc_*` 处断开。只出站剥掉 id 不够：日志仍在重铸，线上缓存仍约 1%。不改 `prompt_cache_key*`，也不绕过 Semantic Cache。
 6. **特性：路由规则可按工具类型匹配。** 路由规则的 CEL 多了 `tool_types` 变量，可以只把带原生 `web_search` 的请求（Claude Code 的 WebSearch 辅助请求）转给 DeepSeek 官方 Anthropic 端点做服务端搜索，主模型不变。
+7. **特性：OpenCode 可走 Anthropic 格式。** 内置 opencode-go / opencode-zen 的 key 或 Deployments 行可打开 **Use Anthropic Endpoints**，请求改发 OpenCode 的 `/v1/messages`，并照常带上 `x-opencode-session`。Qwen、MiniMax 这类原生 Anthropic 格式的模型因此不再被转换。
 
 上游同步用 rebase，不引入 merge commit。`enhanced` 上除 fork commit 外，历史与上游 `main` 一致。
 

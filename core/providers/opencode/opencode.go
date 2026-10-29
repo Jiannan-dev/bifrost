@@ -1,6 +1,7 @@
 // Package opencode implements the Opencode Zen and Go AI gateway providers.
 // Both gateways expose an OpenAI-compatible API and share the same implementation,
-// differing only in default base URL and provider key.
+// differing only in default base URL and provider key. A key or alias with
+// use_anthropic_endpoints uses their Anthropic Messages endpoint instead.
 package opencode
 
 import (
@@ -8,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/maximhq/bifrost/core/providers/anthropic"
 	"github.com/maximhq/bifrost/core/providers/openai"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	schemas "github.com/maximhq/bifrost/core/schemas"
@@ -161,8 +163,40 @@ func (p *opencodeProvider) TextCompletionStream(ctx *schemas.BifrostContext, pos
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.TextCompletionStreamRequest, p.GetProviderKey())
 }
 
+// anthropicMessagesURL is OpenCode's Anthropic Messages endpoint. A key or alias with
+// use_anthropic_endpoints sends chat and responses there, so Anthropic-native models (Qwen,
+// MiniMax) skip format conversion; OpenCode still requires x-opencode-session on it.
+func (p *opencodeProvider) anthropicMessagesURL(ctx *schemas.BifrostContext) string {
+	return p.networkConfig.BaseURL + providerUtils.GetPathFromContext(ctx, "/v1/messages")
+}
+
+func (p *opencodeProvider) anthropicBuildConfig(ctx *schemas.BifrostContext, streaming bool) anthropic.AnthropicRequestBuildConfig {
+	return anthropic.AnthropicRequestBuildConfig{
+		Provider:                  p.providerKey,
+		IsStreaming:               streaming,
+		ShouldSendBackRawRequest:  providerUtils.ShouldSendBackRawRequest(ctx, p.sendBackRawRequest),
+		ShouldSendBackRawResponse: providerUtils.ShouldSendBackRawResponse(ctx, p.sendBackRawResponse),
+	}
+}
+
+// anthropicHeaders builds the auth-header map for OpenCode's Anthropic Messages
+// endpoint. The resolved x-opencode-session rides here too: Go rejects that
+// endpoint without it, and the auth map is applied last with Header.Set, so the
+// per-request value wins over any static network_config.extra_headers entry.
+func anthropicHeaders(ctx *schemas.BifrostContext, key schemas.Key) map[string]string {
+	headers := map[string]string{"x-api-key": key.Value.GetValue()}
+	if session := ResolveOpencodeSession(ctx); session != "" {
+		headers[OpencodeSessionHeader] = session
+	}
+	return headers
+}
+
 // ChatCompletion performs a chat completion request to the Opencode API.
 func (p *opencodeProvider) ChatCompletion(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
+	if anthropic.ResolveUseAnthropicEndpoints(ctx, key) {
+		return anthropic.HandleAnthropicChatCompletionRequest(ctx, p.client, p.anthropicMessagesURL(ctx), request,
+			p.anthropicBuildConfig(ctx, false), anthropicHeaders(ctx, key), p.networkConfig.ExtraHeaders, nil, p.logger)
+	}
 	return openai.HandleOpenAIChatCompletionRequest(
 		ctx,
 		p.client,
@@ -182,6 +216,17 @@ func (p *opencodeProvider) ChatCompletion(ctx *schemas.BifrostContext, key schem
 
 // ChatCompletionStream performs a streaming chat completion request to the Opencode API.
 func (p *opencodeProvider) ChatCompletionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostChatRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	if anthropic.ResolveUseAnthropicEndpoints(ctx, key) {
+		cfg := p.anthropicBuildConfig(ctx, true)
+		jsonData, bifrostErr := anthropic.BuildAnthropicChatRequestBody(ctx, request, cfg)
+		if bifrostErr != nil {
+			return nil, bifrostErr
+		}
+		return anthropic.HandleAnthropicChatCompletionStreaming(ctx, p.streamingClient, p.anthropicMessagesURL(ctx), jsonData,
+			anthropicHeaders(ctx, key), p.networkConfig.ExtraHeaders, p.networkConfig.StreamIdleTimeoutInSeconds, p.networkConfig.BetaHeaderOverrides,
+			cfg.ShouldSendBackRawRequest, cfg.ShouldSendBackRawResponse, p.providerKey, postHookRunner, nil,
+			nil, p.logger, postHookSpanFinalizer)
+	}
 	return openai.HandleOpenAIChatCompletionStreaming(
 		ctx,
 		p.streamingClient,
@@ -207,6 +252,10 @@ func (p *opencodeProvider) ChatCompletionStream(ctx *schemas.BifrostContext, pos
 
 // Responses performs a responses request to the Opencode API.
 func (p *opencodeProvider) Responses(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
+	if anthropic.ResolveUseAnthropicEndpoints(ctx, key) {
+		return anthropic.HandleAnthropicResponsesRequest(ctx, p.client, p.anthropicMessagesURL(ctx), request,
+			p.anthropicBuildConfig(ctx, false), anthropicHeaders(ctx, key), p.networkConfig.ExtraHeaders, nil, p.logger)
+	}
 	if p.fallbackResponsesToChat {
 		chatResponse, err := p.ChatCompletion(ctx, key, request.ToChatRequest())
 		if err != nil {
@@ -234,6 +283,17 @@ func (p *opencodeProvider) Responses(ctx *schemas.BifrostContext, key schemas.Ke
 
 // ResponsesStream performs a streaming responses request to the Opencode API.
 func (p *opencodeProvider) ResponsesStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostResponsesRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	if anthropic.ResolveUseAnthropicEndpoints(ctx, key) {
+		cfg := p.anthropicBuildConfig(ctx, true)
+		jsonData, bifrostErr := anthropic.BuildAnthropicResponsesRequestBody(ctx, request, cfg)
+		if bifrostErr != nil {
+			return nil, bifrostErr
+		}
+		return anthropic.HandleAnthropicResponsesStream(ctx, p.streamingClient, p.anthropicMessagesURL(ctx), jsonData,
+			anthropicHeaders(ctx, key), p.networkConfig.ExtraHeaders, p.networkConfig.StreamIdleTimeoutInSeconds, p.networkConfig.BetaHeaderOverrides,
+			cfg.ShouldSendBackRawRequest, cfg.ShouldSendBackRawResponse, p.providerKey, postHookRunner, nil,
+			nil, p.logger, postHookSpanFinalizer)
+	}
 	if p.fallbackResponsesToChat {
 		ctx.SetValue(schemas.BifrostContextKeyIsResponsesToChatCompletionFallback, true)
 		return p.ChatCompletionStream(
