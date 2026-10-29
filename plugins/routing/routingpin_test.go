@@ -539,3 +539,85 @@ func TestApplyRoutingRules_SkippedFallbackIsLogged(t *testing.T) {
 		})
 	}
 }
+
+// TestApplyRoutingRules_ToolTypesRouteNativeWebSearch pins the tool_types variable: a rule can
+// send only the requests that carry a native web_search server tool (Claude Code's WebSearch
+// auxiliary request arrives as one) to a search-capable target, while the same client's
+// function-tool turns and tool-less requests keep their own provider.
+func TestApplyRoutingRules_ToolTypesRouteNativeWebSearch(t *testing.T) {
+	store, err := rules.NewLocalStore(context.Background(), rules.NewMockLogger(), nil)
+	require.NoError(t, err)
+	require.NoError(t, store.UpsertRule(context.Background(), &configstoreTables.TableRoutingRule{
+		ID:            "websearch-1",
+		Name:          "Native web search to DeepSeek",
+		CelExpression: `"web_search" in tool_types`,
+		Targets: []configstoreTables.TableRoutingTarget{
+			{Provider: bifrost.Ptr("deepseek"), Model: bifrost.Ptr("deepseek-v4-flash-anthropic"), Weight: 1.0},
+		},
+		Enabled: bifrost.Ptr(true),
+		Scope:   "global",
+	}))
+	plugin, err := InitFromStore(context.Background(), nil, rules.NewMockLogger(), nil, store, NewMockGovernance())
+	require.NoError(t, err)
+
+	responses := func(types ...schemas.ResponsesToolType) *schemas.BifrostRequest {
+		tools := make([]schemas.ResponsesTool, 0, len(types))
+		for _, typ := range types {
+			tools = append(tools, schemas.ResponsesTool{Type: typ})
+		}
+		return &schemas.BifrostRequest{
+			RequestType: schemas.ResponsesStreamRequest,
+			ResponsesRequest: &schemas.BifrostResponsesRequest{
+				Provider: "opencode-go", Model: "deepseek-v4-flash",
+				Params: &schemas.ResponsesParameters{Tools: tools},
+			},
+		}
+	}
+
+	search := responses(schemas.ResponsesToolTypeWebSearch)
+	decision, err := plugin.applyRoutingRules(schemas.NewBifrostContext(context.Background(), time.Now()), search, rules.GovernanceScope{})
+	require.NoError(t, err)
+	require.NotNil(t, decision, "a native web_search request must match")
+	assert.Equal(t, schemas.DeepSeek, search.ResponsesRequest.Provider)
+	assert.Equal(t, "deepseek-v4-flash-anthropic", search.ResponsesRequest.Model)
+
+	for name, req := range map[string]*schemas.BifrostRequest{
+		"function tools only": responses(schemas.ResponsesToolTypeFunction, schemas.ResponsesToolTypeFunction),
+		"no tools":            responses(),
+		"chat without tools": {
+			RequestType: schemas.ChatCompletionRequest,
+			ChatRequest: &schemas.BifrostChatRequest{Provider: "opencode-go", Model: "deepseek-v4-flash"},
+		},
+	} {
+		decision, err := plugin.applyRoutingRules(schemas.NewBifrostContext(context.Background(), time.Now()), req, rules.GovernanceScope{})
+		require.NoError(t, err, name)
+		assert.Nil(t, decision, "%s must not match", name)
+		provider, _, _ := req.GetRequestFields()
+		assert.Equal(t, schemas.ModelProvider("opencode-go"), provider, name)
+	}
+}
+
+// BenchmarkRequestToolTypes covers a Claude Code main-loop request (many function tools) and
+// its WebSearch auxiliary request; requestToolTypes only runs when routing rules exist.
+func BenchmarkRequestToolTypes(b *testing.B) {
+	mainLoop := make([]schemas.ResponsesTool, 40)
+	for i := range mainLoop {
+		mainLoop[i].Type = schemas.ResponsesToolTypeFunction
+	}
+	for name, tools := range map[string][]schemas.ResponsesTool{
+		"main-loop": mainLoop,
+		"websearch": {{Type: schemas.ResponsesToolTypeWebSearch}},
+		"no-tools":  nil,
+	} {
+		req := &schemas.BifrostRequest{
+			RequestType:      schemas.ResponsesRequest,
+			ResponsesRequest: &schemas.BifrostResponsesRequest{Params: &schemas.ResponsesParameters{Tools: tools}},
+		}
+		b.Run(name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				_ = requestToolTypes(req)
+			}
+		})
+	}
+}

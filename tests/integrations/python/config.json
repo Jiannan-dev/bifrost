@@ -1536,6 +1536,20 @@
             "weight": 1
           }
         ]
+      },
+      {
+        "id": "harness-tool-types-websearch-route",
+        "priority": 912,
+        "name": "Harness tool_types: native web_search to DeepSeek",
+        "description": "Provider harness only (folder 297, fork). Sends only requests that carry a native web_search server tool to DeepSeek's Anthropic-compatible endpoint, so a client's search turns run on DeepSeek's server-side search while its other turns keep their provider. Matches nothing without x-harness-tool-types-route: deepseek.",
+        "cel_expression": "\"x-harness-tool-types-route\" in headers && headers[\"x-harness-tool-types-route\"] == \"deepseek\" && \"web_search\" in tool_types",
+        "targets": [
+          {
+            "provider": "deepseek",
+            "model": "deepseek-v4-flash-anthropic",
+            "weight": 1
+          }
+        ]
       }
     ],
     "budgets": [

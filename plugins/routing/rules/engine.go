@@ -74,6 +74,7 @@ type EvaluationContext struct {
 	Fallbacks                []configstoreTables.RoutingFallback  // Fallback chain, each optionally pinning a provider key
 	Headers                  map[string]string                    // Request headers for dynamic routing
 	QueryParams              map[string]string                    // Query parameters for dynamic routing
+	ToolTypes                []string                             // Distinct tool types the request declares (e.g. "function", "web_search")
 	BudgetAndRateLimitStatus *governance.BudgetAndRateLimitStatus // Budget and rate limit status by provider/model
 	ComputeComplexity        func() *complexity.ComplexityResult  // Lazy complexity computation; called at most once when a rule references "complexity_tier"
 }
@@ -510,6 +511,7 @@ func extractRoutingVariables(ctx *EvaluationContext) (map[string]interface{}, er
 		}
 	}
 	variables["params"] = normalizedParams
+	variables["tool_types"] = ctx.ToolTypes
 
 	// Who the request is governed as. Absent scopes are the empty string, which is what a rule comparing
 	// against one has always seen: the branching this replaced existed only to reach through a
@@ -665,6 +667,7 @@ func createCELEnvironment() (*cel.Env, error) {
 		// Headers and params (dynamic from request)
 		cel.Variable("headers", cel.MapType(cel.StringType, cel.StringType)),
 		cel.Variable("params", cel.MapType(cel.StringType, cel.StringType)),
+		cel.Variable("tool_types", cel.ListType(cel.StringType)), // Distinct tool types the request declares, e.g. "web_search" in tool_types
 
 		// VirtualKey/Team/Customer context
 		cel.Variable("virtual_key_id", cel.StringType),

@@ -512,6 +512,7 @@ func (p *RoutingPlugin) applyRoutingRules(ctx *schemas.BifrostContext, req *sche
 		RequestType:              requestType,
 		Headers:                  headers,
 		QueryParams:              queryParams,
+		ToolTypes:                requestToolTypes(req),
 		BudgetAndRateLimitStatus: p.governance.GetBudgetAndRateLimitStatus(ctx, provider, model, nil, nil, nil),
 		ComputeComplexity:        computeComplexity,
 	}

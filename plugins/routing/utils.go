@@ -3,6 +3,7 @@ package routing
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 
 	bifrost "github.com/maximhq/bifrost/core"
@@ -99,4 +100,27 @@ func withMatchedExemplar(message, exemplar string) string {
 		return message
 	}
 	return fmt.Sprintf("%s matched=%q", message, matched)
+}
+
+// requestToolTypes returns the distinct tool types req declares, in first-seen order, for the
+// tool_types routing variable. Native server tools keep their neutral type ("web_search"), so a
+// rule can tell Claude Code's WebSearch auxiliary request from its function-tool turns.
+func requestToolTypes(req *schemas.BifrostRequest) []string {
+	var types []string
+	add := func(t string) {
+		if t != "" && !slices.Contains(types, t) {
+			types = append(types, t)
+		}
+	}
+	if req.ChatRequest != nil && req.ChatRequest.Params != nil {
+		for i := range req.ChatRequest.Params.Tools {
+			add(string(req.ChatRequest.Params.Tools[i].Type))
+		}
+	}
+	if req.ResponsesRequest != nil && req.ResponsesRequest.Params != nil {
+		for i := range req.ResponsesRequest.Params.Tools {
+			add(string(req.ResponsesRequest.Params.Tools[i].Type))
+		}
+	}
+	return types
 }

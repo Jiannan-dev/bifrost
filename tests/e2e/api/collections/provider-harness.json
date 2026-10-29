@@ -298834,6 +298834,146 @@
           }
         }
       ]
+    },
+    {
+      "name": "297. Routing rule tool_types sends native web_search to DeepSeek (fork) (tool-types-websearch-route)",
+      "description": "Fork feature. The routing CEL variable tool_types lists the distinct tool types a request declares. The profile rule harness-tool-types-websearch-route (gated by x-harness-tool-types-route: deepseek) sends a request carrying a native web_search server tool to deepseek/deepseek-v4-flash-anthropic, which runs the search server-side on DeepSeek's Anthropic-compatible endpoint. Claude Code's WebSearch auxiliary request has exactly this shape, so its search runs on DeepSeek whatever the main model is, while a function-tool turn from the same client stays on its own provider. Red before the change: the rule references an undeclared variable and never matches.",
+      "item": [
+        {
+          "name": "openai/gpt-4o-mini /anthropic/v1/messages native web_search routes to deepseek (tool-types-websearch-route)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text();",
+                  "pm.test('tool_types route: exact success status', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + text).to.eql(200);",
+                  "});",
+                  "pm.test('tool_types route: native web_search request is served by DeepSeek', function () {",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-provider'), 'routing provider header: ' + text).to.equal('deepseek');",
+                  "});",
+                  "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('tool_types route: web_search reaches DeepSeek as an Anthropic server tool', function () {",
+                  "  pm.expect(rr, 'raw_request missing: ' + text.slice(0, 600)).to.be.an('object');",
+                  "  var tools = (rr && rr.tools) || [];",
+                  "  pm.expect(tools.some(function (t) { return /^web_search_/.test(t.type || '') && t.name === 'web_search'; }), 'tools: ' + JSON.stringify(tools)).to.eql(true);",
+                  "});",
+                  "pm.test('tool_types route: DeepSeek executed the search server-side', function () {",
+                  "  var content = body.content || [];",
+                  "  pm.expect(content.some(function (b) { return b.type === 'web_search_tool_result'; }), 'content: ' + JSON.stringify(content).slice(0, 800)).to.eql(true);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              },
+              {
+                "key": "x-harness-tool-types-route",
+                "value": "deepseek"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"max_tokens\": 256,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Perform a web search for the query: DeepSeek API documentation\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"web_search_20250305\",\n      \"name\": \"web_search\",\n      \"max_uses\": 1\n    }\n  ],\n  \"tool_choice\": {\n    \"type\": \"tool\",\n    \"name\": \"web_search\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai/gpt-4o-mini /anthropic/v1/messages function tool stays on openai (tool-types-websearch-route)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text();",
+                  "pm.test('tool_types route: exact success status', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + text).to.eql(200);",
+                  "});",
+                  "pm.test('tool_types route: a function-tool turn keeps its own provider', function () {",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-provider'), 'routing provider header: ' + text).to.equal('openai');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              },
+              {
+                "key": "x-harness-tool-types-route",
+                "value": "deepseek"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"max_tokens\": 64,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"What is the weather in Paris? Use the tool.\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"name\": \"get_weather\",\n      \"description\": \"Get the weather for a city\",\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"city\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"city\"\n        ]\n      }\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }
