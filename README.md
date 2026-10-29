@@ -9,6 +9,7 @@
 3. **修复：Responses→Chat 降级时保住前缀缓存。** Claude Code 打自定义 OpenAI 兼容后端时，丢掉 `prompt_cache_key*`、剥掉 billing system 块、把中途的 `role:system` 改写成 `<system-reminder>`，避免打爆 DeepSeek/GLM 的隐式前缀缓存。
 4. **修复：Anthropic thinking 回放不再伪造 reasoning item id。** Claude Code 回放未标记的 `thinking` / `redacted_thinking` 时不再铸造 `rs_*`；OpenCode Go（`store:false`）把这种 id 当成服务端句柄会 400。只恢复嵌入的真实 id；这条 400 会剥掉 reasoning id 再重试一次。不改 `prompt_cache_key*`，也不绕过 Semantic Cache。
 5. **修复：Anthropic 回放用稳定的 function_call item id。** Anthropic 转 Responses 时不再每轮给 `function_call` 铸造随机 `fc_*`，改为由稳定的 `call_id` 派生。OpenCode DeepSeek 的精确前缀缓存会在第一个变化的 `fc_*` 处断开。只出站剥掉 id 不够：日志仍在重铸，线上缓存仍约 1%。不改 `prompt_cache_key*`，也不绕过 Semantic Cache。
+6. **特性：路由规则可按工具类型匹配。** 路由规则的 CEL 多了 `tool_types` 变量，可以只把带原生 `web_search` 的请求（Claude Code 的 WebSearch 辅助请求）转给 DeepSeek 官方 Anthropic 端点做服务端搜索，主模型不变。
 
 上游同步用 rebase，不引入 merge commit。`enhanced` 上除 fork commit 外，历史与上游 `main` 一致。
 
@@ -112,4 +113,20 @@ Compose 同时会挂载 `config.dokploy.json`、构建当前 fork 源码，并�
 export ANTHROPIC_BASE_URL="https://<你的域名>/anthropic"
 ```
 
-模型请填 OpenAI 或 Anthropic 列表返回的完整 `provider/model` id。WebSearch 由支持原生搜索的上游模型执行；本 fork 不再把不支持搜索的模型自动改接 MCP 搜索。内置 DeepSeek provider 要使用其原生搜索，须在对应 key 或 alias 上启用 `use_anthropic_endpoints`。
+模型请填 OpenAI 或 Anthropic 列表返回的完整 `provider/model` id。
+
+### WebSearch 走 DeepSeek 服务端搜索
+
+Claude Code 的 `WebSearch` 会单独发一个辅助请求，里面只有一个原生 `web_search` server tool。DeepSeek 官方 Anthropic 端点（`https://api.deepseek.com/anthropic`）会在服务端执行这个搜索，不需要 Exa 或 MCP。
+
+1. 打开内置 `deepseek` provider 的 key，打开表单最底下的 **Use Anthropic Endpoints**。这个 key 的所有请求都改走 DeepSeek 的 Anthropic 格式接口；只用 DeepSeek 当主模型时，到这一步就够了。
+2. 主模型还会用别家（如 `opencode-go/...`）时，在 **Routing Rules** 里加一条全局规则（手动 CEL 模式），把搜索请求转给 DeepSeek：
+
+   ```text
+   CEL:    "web_search" in tool_types
+   Target: provider = deepseek, model = deepseek-flash
+   ```
+
+   model 必须填，否则会把主模型的名字发给 DeepSeek。deepseek 下只有一个 key 时 API Key 留空；有多个 key 时选打开了开关的那个。
+
+这样无论 Claude Code 主模型是什么，搜索请求都在 DeepSeek 执行，普通轮次不受影响。规则用了 virtual key 时，该 VK 必须允许 `deepseek` provider。
