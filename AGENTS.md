@@ -304,9 +304,12 @@ go.work
 ```
 
 **Rules:**
+- `go.work` / `go.work.sum` are **gitignored on purpose** (upstream does the same). Never commit them.
+- Generate the workspace with `make setup-workspace`; it runs `go work init ./cli ./core ./framework ./transports`, `go work use` for every plugin and `tests/cmd/*` module, then `go work sync`. A hand-written `go.work` will drift and miss modules.
+- `go work sync` rewrites the `tests/cmd/*/go.mod` require versions as a side effect. Upstream keeps them at the lower published version, so revert those files after syncing unless the bump is intended.
 - Run `go mod tidy` in the **specific module directory**, not the root
 - Cross-module imports resolve via workspace locally, but need explicit `require` in `go.mod` for releases
-- The workspace requires **Go 1.27.4** (`go.work` directive)
+- The workspace requires **Go 1.27.4** (every module's `go.mod` directive; `go.work` inherits it)
 
 ---
 
